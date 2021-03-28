@@ -1,17 +1,17 @@
-1. Cython: 
-    version: 0.28.1
-    url: http://pypi.doubanio.com/simple/cython/
+1. torchaudio:
+    version: v0.8.1
+    commit: e4e171a
+    date: 2021.03.26
+    url: https://github.com/pytorch/audio/releases
 2. torchvision:
-    version: 0.2.1
-    commit: 1d0a3b1
-    date: 2018.04.25
-    url:
-        https://pypi.org/project/torchvision/#files
-        https://github.com/pytorch/vision/releases
+    version: v0.9.1
+    commit: 8fb5838
+    date: 2021.03.26
+    url: https://github.com/pytorch/vision/releases
 3. PyTorch:
-    version: 1.0
-    commit: db5d313
-    date: 2018.12.08
+    version: v1.8.1
+    commit: 56b43f4
+    date: 2021.03.26
     url: https://github.com/pytorch/pytorch/releases
 4. mmcv:
     version: 0.2.4
