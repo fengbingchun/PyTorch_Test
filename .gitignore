@@ -1,4 +1,5 @@
 /data/result/
 /data/model/
-
+/demo/pytorch/simple_code/data/
+/demo/pytorch/simple_code/*.pth
 
