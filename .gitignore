@@ -1,5 +1,8 @@
 /data/result/
 /data/model/
-/demo/pytorch/simple_code/data/
-/demo/pytorch/simple_code/*.pth
+/demo/pytorch/tutorial/data/
+/demo/pytorch/tutorial/__pycache__/
+/demo/pytorch/tutorial/PennFudanPed/
+/demo/pytorch/tutorial/runs/
+/demo/pytorch/tutorial/*.pth
 
