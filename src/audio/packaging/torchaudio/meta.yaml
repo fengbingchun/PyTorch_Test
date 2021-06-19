@@ -1,0 +1,52 @@
+package:
+  name: torchaudio
+  version: "{{ environ.get('BUILD_VERSION') }}"
+
+source:
+  path: "{{ environ.get('SOURCE_ROOT_DIR') }}"
+
+requirements:
+  build:
+    - {{ compiler('c') }} # [win]
+    - {{ compiler('cxx') }} # [win]
+
+  host:
+    - python
+    - setuptools
+    - cpuonly
+    - cmake
+    - ninja
+    - defaults::numpy >=1.11
+    {{ environ.get('CONDA_PYTORCH_BUILD_CONSTRAINT') }}
+
+  run:
+    - python
+    - defaults::numpy >=1.11
+    {{ environ.get('CONDA_PYTORCH_CONSTRAINT') }}
+
+build:
+  string: py{{py}}
+
+test:
+  imports:
+    - torchaudio
+    - torchaudio.datasets
+    - torchaudio.kaldi_io
+    - torchaudio.sox_effects
+    - torchaudio.transforms
+
+  source_files:
+    - test
+
+  requires:
+    - pytest
+    # Ideally we would test this, but conda doesn't provide librosa
+    # - librosa >=0.4.3
+    - scipy
+    - cpuonly
+
+about:
+  home: https://github.com/pytorch/audio
+  license: BSD
+  license_file: LICENSE
+  summary: 'simple audio I/O for pytorch'
