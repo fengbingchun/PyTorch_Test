@@ -2,6 +2,7 @@
 **The main role of the project:**
 - PyTorch's usage
 - mmdetection's usage
+- FiftyOne's usage
 
 - PyTorch code
 	- batch normalization
