@@ -6,3 +6,4 @@
 /demo/pytorch/tutorial/runs/
 /demo/pytorch/tutorial/*.pth
 /data/image/
+/data/MNIST/
