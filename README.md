@@ -8,6 +8,7 @@
 - PyTorch code
 	- batch normalization
 	- Faster R-CNN + ResNet-50 target detection
+	- AlexNet image classification
 
 **The version of each open source library see:** [version.txt](https://github.com/fengbingchun/PyTorch_Test/blob/master/src/version.txt)
 
