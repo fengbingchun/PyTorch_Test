@@ -28,9 +28,9 @@ class AlexNet(Module):
         print("AlexNet.__init__")
         super(AlexNet, self).__init__()
 
-    # def forward(self, x):
-    #     print("AlexNet.forward")
-    #     return x
+    def forward(self, x):
+        print("AlexNet.forward")
+        return x
 
 model = AlexNet()
 x: List[int] = [1, 2, 3, 4]
