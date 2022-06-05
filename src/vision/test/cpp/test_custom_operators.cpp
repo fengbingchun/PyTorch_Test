@@ -1,5 +1,3 @@
-// Copyright 2004-present Facebook. All Rights Reserved.
-
 #include <gtest/gtest.h>
 #include <torch/script.h>
 #include <torch/torch.h>
@@ -20,7 +18,7 @@ TEST(test_custom_operators, nms) {
   double thresh = 0.7;
 
   torch::jit::push(stack, boxes, scores, thresh);
-  op->getOperation()(&stack);
+  op->getOperation()(stack);
   at::Tensor output_jit;
   torch::jit::pop(stack, output_jit);
 
@@ -49,7 +47,7 @@ TEST(test_custom_operators, roi_align_visible) {
   bool aligned = true;
 
   torch::jit::push(stack, input, rois, spatial_scale, pooled_height, pooled_width, sampling_ratio, aligned);
-  op->getOperation()(&stack);
+  op->getOperation()(stack);
   at::Tensor output_jit;
   torch::jit::pop(stack, output_jit);
 

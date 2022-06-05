@@ -24,9 +24,16 @@ if [ ! -d "${conda_dir}" ]; then
     unset tmp_conda
     unset miniconda_exe
     eval "$("${conda_dir}/Scripts/conda.exe" 'shell.bash' 'hook')"
-    conda update --quiet -y conda
     printf "* Updating the base Python version to %s\n" "${PYTHON_VERSION}"
-    conda install --quiet -y python="$PYTHON_VERSION"
+
+    ADDITIONAL_CHANNELS=""
+    if [[ ${PYTHON_VERSION} == 3.10 ]]; then
+        ADDITIONAL_CHANNELS="-c conda-forge"
+    fi
+
+    # Need to disable shell check since this'll fail out if ADDITIONAL_CHANNELS is empty
+    # shellcheck disable=SC2086
+    conda install ${ADDITIONAL_CHANNELS} --quiet -y python="$PYTHON_VERSION"
 else
     eval "$("${conda_dir}/Scripts/conda.exe" 'shell.bash' 'hook')"
 fi
@@ -37,9 +44,7 @@ if [ ! -d "${env_dir}" ]; then
     conda create --prefix "${env_dir}" -y python="${PYTHON_VERSION}"
 fi
 conda activate "${env_dir}"
-NUMPY_PIN="1.11"
-if [[ "${PYTHON_VERSION}" = "3.9" ]]; then
-    NUMPY_PIN="1.20"
-fi
-printf "* Installing numpy>=%s\n" "${NUMPY_PIN}\n"
-conda install -y -c conda-forge numpy>="${NUMPY_PIN}"
+
+# 3. Install minimal build tools
+pip --quiet install cmake ninja
+conda install --quiet -y 'ffmpeg>=4.1'

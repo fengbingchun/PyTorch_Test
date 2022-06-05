@@ -50,6 +50,22 @@ ExprHandle ExprHandle::operator<=(const ExprHandle& other) const {
   return CompareSelect::make(*this, other, CompareSelectOperation::kLE);
 }
 
+ExprHandle ExprHandle::operator&&(const ExprHandle& other) const {
+  if (!this->node()->dtype().is_integral()) {
+    throw unsupported_dtype();
+  }
+  return IfThenElse::make(
+      *this, other, ExprHandle(getImmediateByType(other.dtype(), 0)));
+}
+
+ExprHandle ExprHandle::operator||(const ExprHandle& other) const {
+  if (!this->node()->dtype().is_integral()) {
+    throw unsupported_dtype();
+  }
+  return IfThenElse::make(
+      *this, ExprHandle(getImmediateByType(other.dtype(), 1)), other);
+}
+
 ExprHandle ExprHandle::operator&(const ExprHandle& other) const {
   return And::make(*this, other);
 }
@@ -73,7 +89,7 @@ ExprHandle ExprHandle::operator>>(const ExprHandle& other) const {
 // NOLINTNEXTLINE
 #define IMM_EXPR_DECLARE(Type, Name) \
   ExprHandle::ExprHandle(Type v) : ExprHandle(Name##Imm::make(v)) {}
-AT_FORALL_SCALAR_TYPES_AND2(Bool, Half, IMM_EXPR_DECLARE);
+AT_FORALL_SCALAR_TYPES_AND3(Bool, Half, BFloat16, IMM_EXPR_DECLARE);
 #undef IMM_EXPR_DECLARE
 
 ExprHandle sin(const ExprHandle& v) {
@@ -131,7 +147,6 @@ ExprHandle abs(const ExprHandle& v) {
 // The default tanh is quite slow, use the Eigen version from here:
 // https://bitbucket.org/eigen/eigen/src/94875feeeeb9abe5509b314197da1991ba2070f5/Eigen/src/Core/MathFunctionsImpl.h#lines-26
 ExprHandle fast_tanh(const ExprHandle& v) {
-  Dtype dtype = v.dtype();
   // TODO: use a dedicated bind-var to make sure v is not evalualted multiple
   // times. Clamp the input expression to [-9, 9]
   ExprHandle plus_9 = FloatImm::make(9.0f);
@@ -221,6 +236,42 @@ ExprHandle fast_log(const ExprHandle& v) {
   return x;
 }
 
+ExprHandle log_vml(const ExprHandle& v) {
+  auto mlaf = [](ExprHandle x, ExprHandle y, float z) {
+    return x * y + FloatImm::make(z);
+  };
+
+  auto in = bitcast<int32_t>(v);
+  auto a = in - IntImm::make(0x3f2aaaab);
+  auto e = cast<float>(a >> IntImm::make(23));
+
+  auto x = (a & IntImm::make(0x7fffff)) + IntImm::make(0x3f2aaaab);
+  x = bitcast<float>(x) - 1.0f;
+
+  auto t = FloatImm::make(-0.12891686f);
+  t = mlaf(x, t, 0.139844373f);
+  t = mlaf(x, t, -0.121842608f);
+  t = mlaf(x, t, 0.140058696f);
+  t = mlaf(x, t, -0.16680488f);
+  t = mlaf(x, t, 0.200104058f);
+  t = mlaf(x, t, -0.249997973f);
+  t = mlaf(x, t, 0.333332151f);
+  t = mlaf(x, t, -0.5f);
+  t = x * t;
+  t = x * t + x;
+
+  auto z = e * FloatImm::make(1.42860677e-06f) + t;
+  z = e * FloatImm::make(0.693145752f) + z;
+
+  return CompareSelect::make(
+      IntImm::make(0x1000000),
+      in + IntImm::make(0x800000),
+      log(v),
+      z,
+      kGT,
+      kUnlikely);
+}
+
 ExprHandle log(const ExprHandle& v) {
   return Intrinsics::make(kLog, v);
 }
@@ -304,16 +355,90 @@ ExprHandle ifThenElse(
   return IfThenElse::make(c, t, f);
 }
 
+std::vector<ExprPtr> make_contiguous_strides(
+    const std::vector<ExprHandle>& dims) {
+  std::vector<ExprPtr> strides;
+
+  if (dims.size() > 0) {
+    strides.resize(dims.size());
+    auto si = immLike(dims[0], 1);
+    // NOLINTNEXTLINE
+    for (int i = dims.size() - 1; i >= 0; --i) {
+      // NOLINTNEXTLINE
+      strides[i] = si;
+      si = alloc<Mul>(si, dims[i].node());
+    }
+  }
+  return strides;
+}
+
+std::vector<ExprPtr> make_channels_last_strides(
+    const std::vector<ExprHandle>& dims) {
+  std::vector<ExprPtr> strides;
+  TORCH_INTERNAL_ASSERT(
+      dims.size() == 4 || dims.size() == 3, "got size:", dims.size());
+  if (dims.size() == 4) {
+    strides.resize(dims.size());
+    ExprHandle handle = ExprHandle(immLike(dims[0], 1));
+    // dims:               n   c    h  w
+    // strides(nhwc):  w*c*h   1  w*c  c
+    strides[1] = handle.node();
+    handle = handle * dims[1];
+    strides[3] = handle.node();
+    handle = handle * dims[3];
+    strides[2] = handle.node();
+    handle = handle * dims[2];
+    strides[0] = handle.node();
+  }
+  if (dims.size() == 3) {
+    strides.resize(dims.size());
+    ExprHandle handle = ExprHandle(immLike(dims[0], 1));
+    // dims:              n   c    l
+    // strides(nlc):    c*l   1    c
+    strides[1] = handle.node();
+    handle = handle * dims[1];
+    strides[2] = handle.node();
+    handle = handle * dims[2];
+    strides[0] = handle.node();
+  }
+  return strides;
+}
+
+Buf::Buf(
+    VarPtr var,
+    std::vector<ExprPtr> dims,
+    Dtype dtype,
+    ExprPtr initializer,
+    c10::optional<std::vector<ExprPtr>> strides,
+    ExprPtr qscale,
+    ExprPtr qzero)
+    : ExprNodeBase(dtype, kPrimitive),
+      base_handle_(var),
+      dims_(std::move(dims)),
+      strides_(
+          strides
+              ? *strides
+              : make_contiguous_strides(ExprVectorToExprHandleVector(dims_))),
+      initializer_(std::move(initializer)),
+      qscale_(std::move(qscale)),
+      qzero_(std::move(qzero)) {
+  TORCH_CHECK(var);
+}
+
 ExprHandle Buf::make(
     const std::string& name_hint,
     const std::vector<ExprHandle>& dims,
     Dtype dtype) {
   return ExprHandle(
-      new Buf(name_hint, ExprHandleVectorToExprVector(dims), dtype));
+      alloc<Buf>(name_hint, ExprHandleVectorToExprVector(dims), dtype));
 }
 
 ExprHandle Buf::make(const std::vector<ExprHandle>& dims, Dtype dtype) {
   return Buf::make("", dims, dtype);
+}
+
+std::vector<ExprHandle> BufHandle::dims() const {
+  return ExprVectorToExprHandleVector(node()->dims());
 }
 
 ExprHandle expr_to_vec(ExprHandle v, int lanes) {

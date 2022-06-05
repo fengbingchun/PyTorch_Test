@@ -29,27 +29,40 @@ if [ -z "${CUDA_VERSION:-}" ] ; then
     else
         cudatoolkit="cpuonly"
     fi
+    version="cpu"
 else
     version="$(python -c "print('.'.join(\"${CUDA_VERSION}\".split('.')[:2]))")"
     cudatoolkit="cudatoolkit=${version}"
 fi
+
 printf "Installing PyTorch with %s\n" "${cudatoolkit}"
 (
+    if [[ "$(python --version)" = *3.10* ]]; then
+        CONDA_CHANNEL_FLAGS="-c conda-forge"
+    fi
+
+    if [ "${os}" == MacOSX ] ; then
+      # TODO: this can be removed as soon as linking issue could be resolved
+      #  see https://github.com/pytorch/pytorch/issues/62424 from details
+      MKL_CONSTRAINT='mkl==2021.2.0'
+      pytorch_build=pytorch
+    else
+      MKL_CONSTRAINT=''
+      pytorch_build="pytorch[build="*${version}*"]"
+    fi
     set -x
-    conda install ${CONDA_CHANNEL_FLAGS:-} -y defaults::numpy
-    conda install ${CONDA_CHANNEL_FLAGS:-} -y -c "pytorch-${UPLOAD_CHANNEL}" "pytorch-${UPLOAD_CHANNEL}::pytorch" ${cudatoolkit}
+    conda install ${CONDA_CHANNEL_FLAGS:-} -y -c "pytorch-${UPLOAD_CHANNEL}" $MKL_CONSTRAINT "pytorch-${UPLOAD_CHANNEL}::${pytorch_build}" ${cudatoolkit}
 )
 
 # 2. Install torchaudio
 printf "* Installing torchaudio\n"
-git submodule update --init --recursive
-BUILD_TRANSDUCER=0 BUILD_SOX=1 python setup.py install
+python setup.py install
 
 # 3. Install Test tools
 printf "* Installing test tools\n"
 NUMBA_DEV_CHANNEL=""
-if [[ "$(python --version)" = *3.9* ]]; then
-    # Numba isn't available for Python 3.9 except on the numba dev channel and building from source fails
+if [[ "$(python --version)" = *3.9* || "$(python --version)" = *3.10* ]]; then
+    # Numba isn't available for Python 3.9 and 3.10 except on the numba dev channel and building from source fails
     # See https://github.com/librosa/librosa/issues/1270#issuecomment-759065048
     NUMBA_DEV_CHANNEL="-c numba/label/dev"
 fi
@@ -57,5 +70,10 @@ fi
 (
     set -x
     conda install -y -c conda-forge ${NUMBA_DEV_CHANNEL} 'librosa>=0.8.0' parameterized 'requests>=2.20'
-    pip install kaldi-io SoundFile codecov pytest pytest-cov scipy
+    pip install kaldi-io SoundFile coverage pytest pytest-cov scipy transformers expecttest unidecode inflect Pillow
 )
+# Install fairseq
+git clone https://github.com/pytorch/fairseq
+cd fairseq
+git checkout e47a4c8
+pip install .

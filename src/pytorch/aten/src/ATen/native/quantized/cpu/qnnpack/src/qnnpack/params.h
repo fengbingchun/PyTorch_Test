@@ -427,7 +427,7 @@ typedef void (*pytorch_hgemm_ukernel_function)(
     size_t c_stride,
     const struct pytorch_qnnp_fp16_clamping_params* clamping_params);
 
-typedef void (*pytorch_q8dwconv_up_ukernel_function)(
+typedef void (*pytorch_q8dwconv2d_up_ukernel_function)(
     size_t channels,
     size_t output_width,
     const uint8_t** input,
@@ -437,7 +437,7 @@ typedef void (*pytorch_q8dwconv_up_ukernel_function)(
     size_t output_increment,
     const union pytorch_qnnp_conv_quantization_params* quantization_params);
 
-typedef void (*pytorch_q8dwconv_mp_ukernel_function)(
+typedef void (*pytorch_q8dwconv2d_mp_ukernel_function)(
     size_t channels,
     size_t output_width,
     const uint8_t** input,
@@ -445,6 +445,19 @@ typedef void (*pytorch_q8dwconv_mp_ukernel_function)(
     int32_t* buffer,
     uint8_t* output,
     size_t input_stride,
+    size_t output_increment,
+    const union pytorch_qnnp_conv_quantization_params* quantization_params);
+
+typedef void (*pytorch_q8dwconv3d_mp_ukernel_function)(
+    size_t channels,
+    size_t output_height,
+    size_t output_width,
+    const uint8_t** input,
+    const void* weights,
+    int32_t* buffer,
+    uint8_t* output,
+    size_t input_row_stride,
+    size_t input_col_stride,
     size_t output_increment,
     const union pytorch_qnnp_conv_quantization_params* quantization_params);
 
@@ -538,6 +551,9 @@ struct pytorch_q8gemm_sparse_parameters {
   uint8_t nr;
   uint8_t kr;
   uint8_t log2_mr;
+  uint8_t log2_row_block_size;
+  uint32_t row_block_size;
+  uint32_t col_block_size;
 };
 
 struct pytorch_q8conv_xzp_parameters {
@@ -550,15 +566,20 @@ struct pytorch_q8conv_xzp_parameters {
   size_t kthreshold;
 };
 
-struct pytorch_q8dwconv_up_parameters {
-  pytorch_q8dwconv_up_ukernel_function updw;
-  pytorch_q8dwconv_up_ukernel_function updw_per_channel;
+struct pytorch_q8dwconv2d_up_parameters {
+  pytorch_q8dwconv2d_up_ukernel_function updw;
+  pytorch_q8dwconv2d_up_ukernel_function updw_per_channel;
   uint8_t cr;
 };
 
-struct pytorch_q8dwconv_mp_parameters {
-  pytorch_q8dwconv_mp_ukernel_function mpdw;
-  pytorch_q8dwconv_mp_ukernel_function mpdw_per_channel;
+struct pytorch_q8dwconv2d_mp_parameters {
+  pytorch_q8dwconv2d_mp_ukernel_function mpdw;
+  pytorch_q8dwconv2d_mp_ukernel_function mpdw_per_channel;
+  uint8_t cr;
+};
+
+struct pytorch_q8dwconv3d_mp_parameters {
+  pytorch_q8dwconv3d_mp_ukernel_function mpdw;
   uint8_t cr;
 };
 
@@ -601,10 +622,12 @@ struct pytorch_x8zip_parameters {
 
 struct pytorch_qnnp_parameters {
   struct pytorch_q8conv_parameters q8conv;
-  struct pytorch_q8gemm_sparse_parameters q8gemm_sparse;
+  struct pytorch_q8gemm_sparse_parameters q8gemm_sparse_c1x4;
+  struct pytorch_q8gemm_sparse_parameters q8gemm_sparse_c8x1;
   struct pytorch_q8conv_xzp_parameters q8conv_xzp;
-  struct pytorch_q8dwconv_up_parameters q8dw9;
-  struct pytorch_q8dwconv_mp_parameters q8dw25;
+  struct pytorch_q8dwconv2d_up_parameters q8dw9;
+  struct pytorch_q8dwconv2d_mp_parameters q8dw25;
+  struct pytorch_q8dwconv3d_mp_parameters q8dw27;
   struct pytorch_q8sum_rows_parameters q8sum_rows;
   pytorch_q8vadd_ukernel_function q8vadd;
   struct pytorch_q8gavgpool_parameters q8gavgpool;

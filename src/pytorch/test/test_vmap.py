@@ -1,3 +1,5 @@
+# Owner(s): ["module: vmap"]
+
 from torch.testing._internal.common_utils import TestCase, run_tests
 import torch
 import torch.nn.functional as F
@@ -6,12 +8,12 @@ from torch._vmap_internals import vmap
 import functools
 import itertools
 import warnings
-from torch.testing._internal.common_device_type import instantiate_device_type_tests
-from torch.testing._internal.common_utils import TEST_WITH_ROCM
+from torch.testing._internal.common_device_type import instantiate_device_type_tests, \
+    skipCUDAIfNoMagma
 import types
 
 
-FALLBACK_REGEX = r'falling back to slow \(for loop( and stack)?\) implementation'
+FALLBACK_REGEX = r'There is a performance drop'
 
 class EnableVmapFallbackWarnings:
     def __enter__(self):
@@ -154,6 +156,7 @@ class TestVmapAPI(TestCase):
         with self.assertRaisesRegex(RuntimeError, msg):
             vmap(out_op)(tensor, tensor)
 
+        tensor = torch.randn(2)
         # The fallback doesn't support TensorList
         with self.assertRaisesRegex(RuntimeError, 'Batching rule not implemented'):
             vmap(lambda t: torch.atleast_1d([t]))(tensor)
@@ -1585,6 +1588,19 @@ class TestVmapOperators(Namespace.TestVmapBase):
         self.assertEqual(vmap(foo)(ctensor), torch.tensor([1, 1, 1]))
         self.assertEqual(vmap(foo)(tensor), torch.tensor([0, 0, 0]))
 
+    def test_is_floating_point(self):
+        float_tensor = torch.tensor([1., 2., 3.])
+        long_tensor = torch.tensor([1, 2, 3])
+
+        def foo(x):
+            if x.is_floating_point():
+                return torch.tensor(1)
+            else:
+                return torch.tensor(0)
+
+        self.assertEqual(vmap(foo)(float_tensor), torch.tensor([1, 1, 1]))
+        self.assertEqual(vmap(foo)(long_tensor), torch.tensor([0, 0, 0]))
+
     def test_is_contiguous(self):
         def foo(x):
             if x.is_contiguous():
@@ -1627,7 +1643,7 @@ class TestVmapOperators(Namespace.TestVmapBase):
 
         vmap(bar)(torch.randn(B0, 0, 3))
         vmap(bar, in_dims=1)(torch.randn(0, B0, 3))
-        vmap(bar)(torch.randn(B0, 0, 3).transpose(-1, -2))
+        vmap(bar)(torch.randn(B0, 0, 3).mT)
 
         # is_contiguous with other memory formats
         def baz(x, memory_format):
@@ -1854,6 +1870,7 @@ class TestVmapOperators(Namespace.TestVmapBase):
         B0, B1 = 5, 7
 
         # Single vmap, various in_dims / out_dims
+        test(lambda x: x.sum(()), [torch.randn([B0])])
         test(lambda x: x.sum(0), [torch.randn([B0])])
         test(lambda x: x.sum(-1), [torch.randn([B0])])
         test(lambda x: x.sum(0), [torch.randn([B0, 3])])
@@ -1861,6 +1878,7 @@ class TestVmapOperators(Namespace.TestVmapBase):
         test(lambda x: x.sum(2), [torch.randn([2, 5, B0, 3])], in_dims=2, out_dims=2)
 
         # Doubly nested vmap
+        test(vmap(lambda x: x.sum(())), [torch.randn([B0, B1])])
         test(vmap(lambda x: x.sum(0)), [torch.randn([B0, B1])])
         test(vmap(lambda x: x.sum(-1)), [torch.randn([B0, B1])])
         test(vmap(lambda x: x.sum(-2)), [torch.randn([B1, 2, 5, B0, 3])], in_dims=2)
@@ -2286,7 +2304,7 @@ class TestVmapBatchedGradient(Namespace.TestVmapBase):
 
     @allowVmapFallbackUsage
     def test_binary_cross_entropy(self, device):
-        x = F.sigmoid(torch.randn(3, 2, device=device, requires_grad=True))
+        x = torch.sigmoid(torch.randn(3, 2, device=device, requires_grad=True))
         target = torch.rand(3, 2, device=device)
 
         op = functools.partial(F.binary_cross_entropy, target=target)
@@ -2397,6 +2415,7 @@ class TestVmapBatchedGradient(Namespace.TestVmapBase):
         x = torch.randn(2, 3, device=device, requires_grad=True)
         self._batched_grad_test(Tensor.trace, (x,))
 
+    @skipCUDAIfNoMagma
     @allowVmapFallbackUsage
     def test_symeig(self, device):
         def op(x):
@@ -2412,7 +2431,7 @@ class TestVmapBatchedGradient(Namespace.TestVmapBase):
 
 
     @allowVmapFallbackUsage
-    def test_inplace_view(self, device):
+    def test_inplace_on_view(self, device):
         leaf = torch.randn(4, 5, requires_grad=True)
 
         def func(leaf):
@@ -2481,8 +2500,7 @@ class TestVmapBatchedGradient(Namespace.TestVmapBase):
 instantiate_device_type_tests(
     TestVmapBatchedGradient,
     globals(),
-    # Excluding ROCM
-    except_for='cuda' if TEST_WITH_ROCM else None,
+    None,
 )
 
 if __name__ == '__main__':

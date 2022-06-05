@@ -2,14 +2,8 @@ import os
 import platform
 from pathlib import Path
 
-from torchaudio_unittest.common_utils import (
-    TempDirMixin,
-    TorchaudioTestCase,
-    get_whitenoise,
-    save_wav,
-)
-
 from torchaudio.datasets import tedlium
+from torchaudio_unittest.common_utils import TempDirMixin, TorchaudioTestCase, get_whitenoise, save_wav, skipIfNoSox
 
 # Used to generate a unique utterance for each dummy audio file
 _UTTERANCES = [
@@ -143,13 +137,8 @@ class TestTedliumSoundfile(Tedlium, TorchaudioTestCase):
     backend = "soundfile"
 
 
-class TestTedliumSoundfileNew(Tedlium, TorchaudioTestCase):
-    backend = "soundfile-new"
-
-
 if platform.system() != "Windows":
-    class TestTedliumSox(Tedlium, TorchaudioTestCase):
-        backend = "sox"
 
+    @skipIfNoSox
     class TestTedliumSoxIO(Tedlium, TorchaudioTestCase):
         backend = "sox_io"

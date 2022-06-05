@@ -21,12 +21,19 @@ esac
 # 1. Install conda at ./conda
 if [ ! -d "${conda_dir}" ]; then
     printf "* Installing conda\n"
-    wget --quiet -O miniconda.sh "http://repo.continuum.io/miniconda/Miniconda3-latest-${os}-x86_64.sh"
+    curl --silent -L -o miniconda.sh "http://repo.continuum.io/miniconda/Miniconda3-latest-${os}-x86_64.sh"
     bash ./miniconda.sh -b -f -p "${conda_dir}"
     eval "$("${conda_dir}/bin/conda" shell.bash hook)"
-    conda update --quiet -y conda
     printf "* Updating the base Python version to %s\n" "${PYTHON_VERSION}"
-    conda install --quiet -y python="${PYTHON_VERSION}"
+
+    ADDITIONAL_CHANNELS=""
+    if [[ ${PYTHON_VERSION} == 3.10 ]]; then
+        ADDITIONAL_CHANNELS="-c conda-forge"
+    fi
+
+    # Need to disable shell check since this'll fail out if ADDITIONAL_CHANNELS is empty
+    # shellcheck disable=SC2086
+    conda install ${ADDITIONAL_CHANNELS} --quiet -y python="${PYTHON_VERSION}"
 else
     eval "$("${conda_dir}/bin/conda" shell.bash hook)"
 fi
@@ -41,3 +48,4 @@ conda activate "${env_dir}"
 
 # 3. Install minimal build tools
 pip --quiet install cmake ninja
+conda install --quiet -y 'ffmpeg>=4.1' pkg-config

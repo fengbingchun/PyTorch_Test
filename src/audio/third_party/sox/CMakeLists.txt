@@ -1,7 +1,9 @@
+find_package(PkgConfig REQUIRED)
+
 include(ExternalProject)
 
 set(INSTALL_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../install)
-set(ARCHIVE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/archives)
+set(ARCHIVE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../archives)
 set(COMMON_ARGS --quiet --disable-shared --enable-static --prefix=${INSTALL_DIR} --with-pic --disable-dependency-tracking --disable-debug --disable-examples --disable-doc)
 
 # To pass custom environment variables to ExternalProject_Add command,
@@ -19,7 +21,7 @@ ExternalProject_Add(mad
   DOWNLOAD_DIR ${ARCHIVE_DIR}
   URL https://downloads.sourceforge.net/project/mad/libmad/0.15.1b/libmad-0.15.1b.tar.gz
   URL_HASH SHA256=bbfac3ed6bfbc2823d3775ebb931087371e142bb0e9bb1bee51a76a6e0078690
-  PATCH_COMMAND patch < ${CMAKE_CURRENT_SOURCE_DIR}/patch/libmad.patch
+  PATCH_COMMAND patch < ${CMAKE_CURRENT_SOURCE_DIR}/patch/libmad.patch && cp ${CMAKE_CURRENT_SOURCE_DIR}/patch/config.guess ${CMAKE_CURRENT_BINARY_DIR}/src/mad/config.guess && cp ${CMAKE_CURRENT_SOURCE_DIR}/patch/config.sub ${CMAKE_CURRENT_BINARY_DIR}/src/mad/config.sub
   CONFIGURE_COMMAND ${CMAKE_COMMAND} -E env ${envs} ${CMAKE_CURRENT_BINARY_DIR}/src/mad/configure ${COMMON_ARGS}
   DOWNLOAD_NO_PROGRESS ON
   LOG_DOWNLOAD ON
@@ -53,6 +55,7 @@ ExternalProject_Add(lame
   URL https://downloads.sourceforge.net/project/lame/lame/3.99/lame-3.99.5.tar.gz
   URL_HASH SHA256=24346b4158e4af3bd9f2e194bb23eb473c75fb7377011523353196b19b9a23ff
   CONFIGURE_COMMAND ${CMAKE_COMMAND} -E env ${envs} ${CMAKE_CURRENT_BINARY_DIR}/src/lame/configure ${COMMON_ARGS} --enable-nasm
+  PATCH_COMMAND cp ${CMAKE_CURRENT_SOURCE_DIR}/patch/config.guess ${CMAKE_CURRENT_BINARY_DIR}/src/lame/config.guess && cp ${CMAKE_CURRENT_SOURCE_DIR}/patch/config.sub ${CMAKE_CURRENT_BINARY_DIR}/src/lame/config.sub
   DOWNLOAD_NO_PROGRESS ON
   LOG_DOWNLOAD ON
   LOG_UPDATE ON
@@ -172,6 +175,7 @@ set(SOX_OPTIONS
   --without-sndio
   --without-sunaudio
   --without-waveaudio
+  --without-wavpack
   --without-twolame
   )
 

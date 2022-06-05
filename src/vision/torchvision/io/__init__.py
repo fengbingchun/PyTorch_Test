@@ -1,5 +1,13 @@
+from typing import Any, Dict, Iterator
+
 import torch
 
+from ..utils import _log_api_usage_once
+
+try:
+    from ._load_gpu_decoder import _HAS_VIDEO_DECODER
+except ModuleNotFoundError:
+    _HAS_VIDEO_DECODER = False
 from ._video_opt import (
     Timebase,
     VideoMetaData,
@@ -11,12 +19,8 @@ from ._video_opt import (
     _read_video_timestamps_from_file,
     _read_video_timestamps_from_memory,
 )
-from .video import (
-    read_video,
-    read_video_timestamps,
-    write_video,
-)
 from .image import (
+    ImageReadMode,
     decode_image,
     decode_jpeg,
     decode_png,
@@ -28,17 +32,22 @@ from .image import (
     write_jpeg,
     write_png,
 )
+from .video import (
+    read_video,
+    read_video_timestamps,
+    write_video,
+)
 
 
 if _HAS_VIDEO_OPT:
 
-    def _has_video_opt():
+    def _has_video_opt() -> bool:
         return True
 
 
 else:
 
-    def _has_video_opt():
+    def _has_video_opt() -> bool:
         return False
 
 
@@ -96,19 +105,38 @@ class VideoReader:
         stream (string, optional): descriptor of the required stream, followed by the stream id,
             in the format ``{stream_type}:{stream_id}``. Defaults to ``"video:0"``.
             Currently available options include ``['video', 'audio']``
+
+        num_threads (int, optional): number of threads used by the codec to decode video.
+            Default value (0) enables multithreading with codec-dependent heuristic. The performance
+            will depend on the version of FFMPEG codecs supported.
+
+        device (str, optional): Device to be used for decoding. Defaults to ``"cpu"``.
+
     """
 
-    def __init__(self, path, stream="video"):
+    def __init__(self, path: str, stream: str = "video", num_threads: int = 0, device: str = "cpu") -> None:
+        _log_api_usage_once(self)
+        self.is_cuda = False
+        device = torch.device(device)
+        if device.type == "cuda":
+            if not _HAS_VIDEO_DECODER:
+                raise RuntimeError("Not compiled with GPU decoder support.")
+            self.is_cuda = True
+            if device.index is None:
+                raise RuntimeError("Invalid cuda device!")
+            self._c = torch.classes.torchvision.GPUDecoder(path, device.index)
+            return
         if not _has_video_opt():
             raise RuntimeError(
                 "Not compiled with video_reader support, "
                 + "to enable video_reader support, please install "
-                + "ffmpeg (version 4.2 is currently supported) and"
+                + "ffmpeg (version 4.2 is currently supported) and "
                 + "build torchvision from source."
             )
-        self._c = torch.classes.torchvision.Video(path, stream)
 
-    def __next__(self):
+        self._c = torch.classes.torchvision.Video(path, stream, num_threads)
+
+    def __next__(self) -> Dict[str, Any]:
         """Decodes and returns the next frame of the current stream.
         Frames are encoded as a dict with mandatory
         data and pts fields, where data is a tensor, and pts is a
@@ -120,19 +148,25 @@ class VideoReader:
             and corresponding timestamp (``pts``) in seconds
 
         """
+        if self.is_cuda:
+            frame = self._c.next()
+            if frame.numel() == 0:
+                raise StopIteration
+            return {"data": frame}
         frame, pts = self._c.next()
         if frame.numel() == 0:
             raise StopIteration
         return {"data": frame, "pts": pts}
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[Dict[str, Any]]:
         return self
 
-    def seek(self, time_s: float):
+    def seek(self, time_s: float, keyframes_only: bool = False) -> "VideoReader":
         """Seek within current stream.
 
         Args:
             time_s (float): seek time in seconds
+            keyframes_only (bool): allow to seek only to keyframes
 
         .. note::
             Current implementation is the so-called precise seek. This
@@ -140,10 +174,10 @@ class VideoReader:
             frame with the exact timestamp if it exists or
             the first frame with timestamp larger than ``time_s``.
         """
-        self._c.seek(time_s)
+        self._c.seek(time_s, keyframes_only)
         return self
 
-    def get_metadata(self):
+    def get_metadata(self) -> Dict[str, Any]:
         """Returns video metadata
 
         Returns:
@@ -151,7 +185,7 @@ class VideoReader:
         """
         return self._c.get_metadata()
 
-    def set_current_stream(self, stream: str):
+    def set_current_stream(self, stream: str) -> bool:
         """Set current stream.
         Explicitly define the stream we are operating on.
 
@@ -168,6 +202,8 @@ class VideoReader:
         Returns:
             (bool): True on succes, False otherwise
         """
+        if self.is_cuda:
+            print("GPU decoding only works with video stream.")
         return self._c.set_current_stream(stream)
 
 
@@ -182,10 +218,12 @@ __all__ = [
     "_read_video_timestamps_from_memory",
     "_probe_video_from_memory",
     "_HAS_VIDEO_OPT",
+    "_HAS_VIDEO_DECODER",
     "_read_video_clip_from_memory",
     "_read_video_meta_data",
     "VideoMetaData",
     "Timebase",
+    "ImageReadMode",
     "decode_image",
     "decode_jpeg",
     "decode_png",

@@ -2,34 +2,31 @@ import hashlib
 import logging
 import os
 import tarfile
-import threading
 import urllib
 import urllib.request
+import warnings
 import zipfile
-from queue import Queue
 from typing import Any, Iterable, List, Optional
 
-import torch
-from torch.utils.data import Dataset
 from torch.utils.model_zoo import tqdm
 
 
-def stream_url(url: str,
-               start_byte: Optional[int] = None,
-               block_size: int = 32 * 1024,
-               progress_bar: bool = True) -> Iterable:
+def stream_url(
+    url: str, start_byte: Optional[int] = None, block_size: int = 32 * 1024, progress_bar: bool = True
+) -> Iterable:
     """Stream url by chunk
 
     Args:
         url (str): Url.
-        start_byte (int, optional): Start streaming at that point (Default: ``None``).
+        start_byte (int or None, optional): Start streaming at that point (Default: ``None``).
         block_size (int, optional): Size of chunks to stream (Default: ``32 * 1024``).
         progress_bar (bool, optional): Display a progress bar (Default: ``True``).
     """
 
     # If we already have the whole file, there is no need to download it again
     req = urllib.request.Request(url, method="HEAD")
-    url_size = int(urllib.request.urlopen(req).info().get("Content-Length", -1))
+    with urllib.request.urlopen(req) as response:
+        url_size = int(response.info().get("Content-Length", -1))
     if url_size == start_byte:
         return
 
@@ -38,11 +35,11 @@ def stream_url(url: str,
         req.headers["Range"] = "bytes={}-".format(start_byte)
 
     with urllib.request.urlopen(req) as upointer, tqdm(
-            unit="B",
-            unit_scale=True,
-            unit_divisor=1024,
-            total=url_size,
-            disable=not progress_bar,
+        unit="B",
+        unit_scale=True,
+        unit_divisor=1024,
+        total=url_size,
+        disable=not progress_bar,
     ) as pbar:
 
         num_bytes = 0
@@ -55,25 +52,28 @@ def stream_url(url: str,
             pbar.update(len(chunk))
 
 
-def download_url(url: str,
-                 download_folder: str,
-                 filename: Optional[str] = None,
-                 hash_value: Optional[str] = None,
-                 hash_type: str = "sha256",
-                 progress_bar: bool = True,
-                 resume: bool = False) -> None:
+def download_url(
+    url: str,
+    download_folder: str,
+    filename: Optional[str] = None,
+    hash_value: Optional[str] = None,
+    hash_type: str = "sha256",
+    progress_bar: bool = True,
+    resume: bool = False,
+) -> None:
     """Download file to disk.
 
     Args:
         url (str): Url.
         download_folder (str): Folder to download file.
-        filename (str, optional): Name of downloaded file. If None, it is inferred from the url (Default: ``None``).
-        hash_value (str, optional): Hash for url (Default: ``None``).
+        filename (str or None, optional): Name of downloaded file. If None, it is inferred from the url
+            (Default: ``None``).
+        hash_value (str or None, optional): Hash for url (Default: ``None``).
         hash_type (str, optional): Hash type, among "sha256" and "md5" (Default: ``"sha256"``).
         progress_bar (bool, optional): Display a progress bar (Default: ``True``).
         resume (bool, optional): Enable resuming download (Default: ``False``).
     """
-
+    warnings.warn("download_url is deprecated and will be removed in the v0.12 release.")
     req = urllib.request.Request(url, method="HEAD")
     req_info = urllib.request.urlopen(req).info()
 
@@ -85,9 +85,7 @@ def download_url(url: str,
         local_size: Optional[int] = os.path.getsize(filepath)
 
     elif not resume and os.path.exists(filepath):
-        raise RuntimeError(
-            "{} already exists. Delete the file manually and retry.".format(filepath)
-        )
+        raise RuntimeError("{} already exists. Delete the file manually and retry.".format(filepath))
     else:
         mode = "wb"
         local_size = None
@@ -96,11 +94,7 @@ def download_url(url: str,
         with open(filepath, "rb") as file_obj:
             if validate_file(file_obj, hash_value, hash_type):
                 return
-        raise RuntimeError(
-            "The hash of {} does not match. Delete the file manually and retry.".format(
-                filepath
-            )
-        )
+        raise RuntimeError("The hash of {} does not match. Delete the file manually and retry.".format(filepath))
 
     with open(filepath, mode) as fpointer:
         for chunk in stream_url(url, start_byte=local_size, progress_bar=progress_bar):
@@ -108,11 +102,7 @@ def download_url(url: str,
 
     with open(filepath, "rb") as file_obj:
         if hash_value and not validate_file(file_obj, hash_value, hash_type):
-            raise RuntimeError(
-                "The hash of {} does not match. Delete the file manually and retry.".format(
-                    filepath
-                )
-            )
+            raise RuntimeError("The hash of {} does not match. Delete the file manually and retry.".format(filepath))
 
 
 def validate_file(file_obj: Any, hash_value: str, hash_type: str = "sha256") -> bool:
@@ -148,11 +138,12 @@ def extract_archive(from_path: str, to_path: Optional[str] = None, overwrite: bo
     """Extract archive.
     Args:
         from_path (str): the path of the archive.
-        to_path (str, optional): the root path of the extraced files (directory of from_path) (Default: ``None``)
+        to_path (str or None, optional): the root path of the extraced files (directory of from_path)
+            (Default: ``None``)
         overwrite (bool, optional): overwrite existing files (Default: ``False``)
 
     Returns:
-        list: List of paths to extracted files even if not overwritten.
+        List[str]: List of paths to extracted files even if not overwritten.
 
     Examples:
         >>> url = 'http://www.quest.dcs.shef.ac.uk/wmt16_files_mmt/validation.tar.gz'
@@ -198,80 +189,3 @@ def extract_archive(from_path: str, to_path: Optional[str] = None, overwrite: bo
         pass
 
     raise NotImplementedError("We currently only support tar.gz, tgz, and zip achives.")
-
-
-class _DiskCache(Dataset):
-    """
-    Wrap a dataset so that, whenever a new item is returned, it is saved to disk.
-    """
-
-    def __init__(self, dataset: Dataset, location: str = ".cached") -> None:
-        self.dataset = dataset
-        self.location = location
-
-        self._id = id(self)
-        self._cache: List = [None] * len(dataset)
-
-    def __getitem__(self, n: int) -> Any:
-        if self._cache[n]:
-            f = self._cache[n]
-            return torch.load(f)
-
-        f = str(self._id) + "-" + str(n)
-        f = os.path.join(self.location, f)
-        item = self.dataset[n]
-
-        self._cache[n] = f
-        os.makedirs(self.location, exist_ok=True)
-        torch.save(item, f)
-
-        return item
-
-    def __len__(self) -> int:
-        return len(self.dataset)
-
-
-def diskcache_iterator(dataset: Dataset, location: str = ".cached") -> Dataset:
-    return _DiskCache(dataset, location)
-
-
-class _ThreadedIterator(threading.Thread):
-    """
-    Prefetch the next queue_length items from iterator in a background thread.
-
-    Example:
-    >> for i in bg_iterator(range(10)):
-    >>     print(i)
-    """
-
-    class _End:
-        pass
-
-    def __init__(self, generator: Iterable, maxsize: int) -> None:
-        threading.Thread.__init__(self)
-        self.queue: Queue = Queue(maxsize)
-        self.generator = generator
-        self.daemon = True
-        self.start()
-
-    def run(self) -> None:
-        for item in self.generator:
-            self.queue.put(item)
-        self.queue.put(self._End)
-
-    def __iter__(self) -> Any:
-        return self
-
-    def __next__(self) -> Any:
-        next_item = self.queue.get()
-        if next_item == self._End:
-            raise StopIteration
-        return next_item
-
-    # Required for Python 2.7 compatibility
-    def next(self) -> Any:
-        return self.__next__()
-
-
-def bg_iterator(iterable: Iterable, maxsize: int) -> Any:
-    return _ThreadedIterator(iterable, maxsize=maxsize)

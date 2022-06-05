@@ -1,9 +1,17 @@
+import warnings
+
 import torch
+
+
+warnings.warn(
+    "The 'torchvision.transforms._functional_video' module is deprecated since 0.12 and will be removed in 0.14. "
+    "Please use the 'torchvision.transforms.functional' module instead."
+)
 
 
 def _is_tensor_video_clip(clip):
     if not torch.is_tensor(clip):
-        raise TypeError("clip should be Tesnor. Got %s" % type(clip))
+        raise TypeError("clip should be Tensor. Got %s" % type(clip))
 
     if not clip.ndimension() == 4:
         raise ValueError("clip should be 4D. Got %dD" % clip.dim())
@@ -17,14 +25,12 @@ def crop(clip, i, j, h, w):
         clip (torch.tensor): Video clip to be cropped. Size is (C, T, H, W)
     """
     assert len(clip.size()) == 4, "clip should be a 4D tensor"
-    return clip[..., i:i + h, j:j + w]
+    return clip[..., i : i + h, j : j + w]
 
 
 def resize(clip, target_size, interpolation_mode):
     assert len(target_size) == 2, "target size should be tuple (height, width)"
-    return torch.nn.functional.interpolate(
-        clip, size=target_size, mode=interpolation_mode, align_corners=False
-    )
+    return torch.nn.functional.interpolate(clip, size=target_size, mode=interpolation_mode, align_corners=False)
 
 
 def resized_crop(clip, i, j, h, w, size, interpolation_mode="bilinear"):
@@ -98,4 +104,4 @@ def hflip(clip):
         flipped clip (torch.tensor): Size is (C, T, H, W)
     """
     assert _is_tensor_video_clip(clip), "clip should be a 4D torch.tensor"
-    return clip.flip((-1))
+    return clip.flip(-1)

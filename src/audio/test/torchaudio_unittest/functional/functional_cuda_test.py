@@ -1,28 +1,22 @@
+import unittest
+
 import torch
+from torchaudio_unittest.common_utils import PytorchTestCase, skipIfNoCuda
 
-from torchaudio_unittest import common_utils
-from .functional_impl import Lfilter, Spectrogram
+from .functional_impl import Functional
 
 
-@common_utils.skipIfNoCuda
-class TestLFilterFloat32(Lfilter, common_utils.PytorchTestCase):
+@skipIfNoCuda
+class TestFunctionalFloat32(Functional, PytorchTestCase):
     dtype = torch.float32
-    device = torch.device('cuda')
+    device = torch.device("cuda")
+
+    @unittest.expectedFailure
+    def test_lfilter_9th_order_filter_stability(self):
+        super().test_lfilter_9th_order_filter_stability()
 
 
-@common_utils.skipIfNoCuda
-class TestLFilterFloat64(Lfilter, common_utils.PytorchTestCase):
+@skipIfNoCuda
+class TestLFilterFloat64(Functional, PytorchTestCase):
     dtype = torch.float64
-    device = torch.device('cuda')
-
-
-@common_utils.skipIfNoCuda
-class TestSpectrogramFloat32(Spectrogram, common_utils.PytorchTestCase):
-    dtype = torch.float32
-    device = torch.device('cuda')
-
-
-@common_utils.skipIfNoCuda
-class TestSpectrogramFloat64(Spectrogram, common_utils.PytorchTestCase):
-    dtype = torch.float64
-    device = torch.device('cuda')
+    device = torch.device("cuda")

@@ -21,15 +21,15 @@
 #  |----------------|
 #  |packed_a        | 0
 #  |----------------|
-#  
+#
 
 #  After loading w pointer in ip reg.
 #  And after pushing r4-r9 and d8-d15 on stack
 #  |----------------|
-#  |r4 - r11        | 0 
+#  |r4 - r11        | 0
 #  |packed_a        | 32
 #  |----------------|
-#  
+#
 
 # Packed A format.
 # 4kx4m blocks for alls blocks given 4 rows (4m) are placed in contiguous memory.
@@ -42,7 +42,7 @@
 # |                     |        Thus Packed A has (K + 4 - 1)/4 * (M + 4 -1)/4 blocks
 # |                     |
 # |---------------------|
-# 
+#
 # Each 4 x 4 blocks is transposed and stored.
 # Each of the (K + 4 - 1)/4 blocks for a given group of 4 m blocks
 # are stored adjacent in memory
@@ -54,6 +54,12 @@
 # Note when M is not multiple of 4, the rest can contain arbitrary
 # data in packed A as we will not be writing those out.
 # This wil be taken care by just copying the appropriate valid data
+
+# Also note that this packing is same as taking for 4x1 pattern.
+# This is because all the adjacent k's are laid next to each other
+# in both 4x4 as well as 4x1 blocking (mrxkr)
+# So this packing kernel can be used by compute kernel that assumes
+# 8x1 sparsity pattern and has register blocking of 4x8
 
 # void pytorch_q8gemm_sparse_packA_ukernel_4x4__aarch32_neon(
 #     size_t mr,

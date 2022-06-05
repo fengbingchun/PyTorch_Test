@@ -1,15 +1,16 @@
 // Adapted from interp.cpp from Caffe util by Pauline Luc
 // Originally developed by George Papandreou
 #include <ATen/ATen.h>
+#include <ATen/ceil_div.h>
 #include <ATen/AccumulateType.h>
 #include <ATen/NativeFunctions.h>
 #include <ATen/TensorUtils.h>
 #include <ATen/Utils.h>
+#include <ATen/cuda/Atomic.cuh>
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/cuda/CUDAApplyUtils.cuh>
 #include <ATen/native/cuda/UpSample.cuh>
 #include <ATen/native/cuda/KernelUtils.cuh>
-#include <THC/THCAtomics.cuh>
 
 namespace at {
 namespace native {
@@ -27,7 +28,7 @@ idx_3d(const size_t nc,
 }
 
 template <typename scalar_t, typename accscalar_t>
-C10_LAUNCH_BOUNDS_1(1024)
+C10_LAUNCH_BOUNDS_1(512)
 __global__ void upsample_trilinear3d_out_frame(
     const int n,
     const accscalar_t rdepth,
@@ -111,7 +112,7 @@ __global__ void upsample_trilinear3d_out_frame(
 
 // Backward (adjoint) operation 1 <- 2 (accumulates)
 template <typename scalar_t, typename accscalar_t>
-C10_LAUNCH_BOUNDS_1(1024)
+C10_LAUNCH_BOUNDS_1(256)
 __global__ void upsample_trilinear3d_backward_out_frame(
     const int num_kernels,
     const accscalar_t rdepth,
@@ -232,7 +233,7 @@ __global__ void upsample_trilinear3d_backward_out_frame(
 }
 
 static void upsample_trilinear3d_out_cuda_template(
-    Tensor& output,
+    const Tensor& output,
     const Tensor& input,
     IntArrayRef output_size,
     bool align_corners,
@@ -242,46 +243,17 @@ static void upsample_trilinear3d_out_cuda_template(
   TensorArg input_arg{input, "input", 1}, output_arg{output, "output", 2};
   checkAllSameGPU("upsample_trilinear3d_out_cuda", {input_arg, output_arg});
 
-  TORCH_CHECK(
-      output_size.size() == 3,
-      "It is expected output_size equals to 3, but got size ",
-      output_size.size());
-
   int output_depth = output_size[0];
   int output_height = output_size[1];
   int output_width = output_size[2];
 
-  int nbatch = input.size(0);
-  int channels = input.size(1);
   int input_depth = input.size(2);
   int input_height = input.size(3);
   int input_width = input.size(4);
 
-  upsample_3d_shape_check(
-      input,
-      Tensor(),
-      nbatch,
-      channels,
-      input_depth,
-      input_height,
-      input_width,
-      output_depth,
-      output_height,
-      output_width);
-
-  output.resize_({input.size(0),
-                  input.size(1),
-                  output_depth,
-                  output_height,
-                  output_width});
-
-  AT_ASSERT(
-      input_depth > 0 && input_height > 0 && input_width > 0 &&
-      output_depth > 0 && output_height > 0 && output_width > 0);
-
   const int num_kernels = output_depth * output_height * output_width;
   const int num_threads = std::min(
-      at::cuda::getCurrentDeviceProperties()->maxThreadsPerBlock, 1024);
+      at::cuda::getCurrentDeviceProperties()->maxThreadsPerBlock, 512);
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
   AT_DISPATCH_FLOATING_TYPES_AND_HALF(
@@ -299,7 +271,7 @@ static void upsample_trilinear3d_out_cuda_template(
             input_width, output_width, align_corners, scales_w);
 
         upsample_trilinear3d_out_frame<scalar_t, accscalar_t>
-            <<<cuda::ATenCeilDiv(num_kernels, num_threads),
+            <<<ceil_div(num_kernels, num_threads),
                num_threads,
                0,
                stream>>>(
@@ -315,7 +287,7 @@ static void upsample_trilinear3d_out_cuda_template(
 }
 
 static void upsample_trilinear3d_backward_out_cuda_template(
-    Tensor& grad_input,
+    const Tensor& grad_input,
     const Tensor& grad_output_,
     IntArrayRef output_size,
     IntArrayRef input_size,
@@ -329,41 +301,16 @@ static void upsample_trilinear3d_backward_out_cuda_template(
       "upsample_trilinear3d_backward_out_cuda",
       {grad_output_arg, grad_input_arg});
 
-  TORCH_CHECK(
-      output_size.size() == 3,
-      "It is expected output_size equals to 3, but got size ",
-      output_size.size());
-
-  TORCH_CHECK(
-      input_size.size() == 5,
-      "It is expected input_size equals to 5, but got size ",
-      input_size.size());
-
   int output_depth = output_size[0];
   int output_height = output_size[1];
   int output_width = output_size[2];
 
-  int nbatch = input_size[0];
-  int channels = input_size[1];
   int input_depth = input_size[2];
   int input_height = input_size[3];
   int input_width = input_size[4];
 
-  upsample_3d_shape_check(
-      Tensor(),
-      grad_output_,
-      nbatch,
-      channels,
-      input_depth,
-      input_height,
-      input_width,
-      output_depth,
-      output_height,
-      output_width);
   Tensor grad_output = grad_output_.contiguous();
 
-  grad_input.resize_(
-      {nbatch, channels, input_depth, input_height, input_width});
   // A contiguous tensor is required for the kernel launch config
   grad_input.contiguous();
   // Numbers are added atomically to grad_input tensor from multiple threads,
@@ -372,7 +319,7 @@ static void upsample_trilinear3d_backward_out_cuda_template(
 
   const int num_kernels = output_depth * output_height * output_width;
   const int num_threads = std::min(
-      at::cuda::getCurrentDeviceProperties()->maxThreadsPerBlock, 1024);
+      at::cuda::getCurrentDeviceProperties()->maxThreadsPerBlock, 256);
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
   AT_DISPATCH_FLOATING_TYPES_AND_HALF(
@@ -393,7 +340,7 @@ static void upsample_trilinear3d_backward_out_cuda_template(
             input_width, output_width, align_corners, scales_w);
 
         upsample_trilinear3d_backward_out_frame<scalar_t, accscalar_t>
-            <<<cuda::ATenCeilDiv(num_kernels, num_threads),
+            <<<ceil_div(num_kernels, num_threads),
                num_threads,
                0,
                stream>>>(
@@ -411,99 +358,31 @@ static void upsample_trilinear3d_backward_out_cuda_template(
 
 } // namespace
 
-Tensor& upsample_trilinear3d_out_cuda(
-    Tensor& output,
+TORCH_IMPL_FUNC(upsample_trilinear3d_out_cuda) (
     const Tensor& input,
     IntArrayRef output_size,
     bool align_corners,
     c10::optional<double> scales_d,
     c10::optional<double> scales_h,
-    c10::optional<double> scales_w) {
-  upsample_trilinear3d_out_cuda_template(
-      output, input, output_size, align_corners, scales_d, scales_h, scales_w);
-  return output;
+    c10::optional<double> scales_w,
+    const Tensor& output) {
+  upsample_trilinear3d_out_cuda_template(output, input, output_size, align_corners, scales_d, scales_h, scales_w);
 }
 
-Tensor upsample_trilinear3d_cuda(
-    const Tensor& input,
-    IntArrayRef output_size,
-    bool align_corners,
-    c10::optional<double> scales_d,
-    c10::optional<double> scales_h,
-    c10::optional<double> scales_w) {
-  Tensor output = at::empty_like(input, LEGACY_CONTIGUOUS_MEMORY_FORMAT);
-  upsample_trilinear3d_out_cuda_template(
-      output, input, output_size, align_corners, scales_d, scales_h, scales_w);
-  return output;
-}
-
-Tensor& upsample_trilinear3d_backward_out_cuda(
-    Tensor& grad_input,
+TORCH_IMPL_FUNC(upsample_trilinear3d_backward_out_cuda) (
     const Tensor& grad_output,
     IntArrayRef output_size,
     IntArrayRef input_size,
     bool align_corners,
     c10::optional<double> scales_d,
     c10::optional<double> scales_h,
-    c10::optional<double> scales_w) {
+    c10::optional<double> scales_w,
+    const Tensor& grad_input) {
   // See Note [Writing Nondeterministic Operations]
   // Nondeterministic because of atomicAdd usage
   globalContext().alertNotDeterministic("upsample_trilinear3d_backward_out_cuda");
   upsample_trilinear3d_backward_out_cuda_template(
       grad_input, grad_output, output_size, input_size, align_corners, scales_d, scales_h, scales_w);
-  return grad_input;
-}
-
-Tensor upsample_trilinear3d_backward_cuda(
-    const Tensor& grad_output,
-    IntArrayRef output_size,
-    IntArrayRef input_size,
-    bool align_corners,
-    c10::optional<double> scales_d,
-    c10::optional<double> scales_h,
-    c10::optional<double> scales_w) {
-  // See Note [Writing Nondeterministic Operations]
-  // Nondeterministic because of atomicAdd usage
-  globalContext().alertNotDeterministic("upsample_trilinear3d_backward_cuda");
-  Tensor grad_input = at::empty_like(grad_output, LEGACY_CONTIGUOUS_MEMORY_FORMAT);
-  upsample_trilinear3d_backward_out_cuda_template(
-      grad_input, grad_output, output_size, input_size, align_corners, scales_d, scales_h, scales_w);
-  return grad_input;
-}
-
-using at::native::upsample::compute_output_size;
-using at::native::upsample_cuda::get_scale_value;
-
-Tensor upsample_trilinear3d_cuda(
-    const Tensor& input,
-    c10::optional<IntArrayRef> output_size,
-    bool align_corners,
-    c10::optional<ArrayRef<double>> scale_factors) {
-  auto output = at::empty_like(input, LEGACY_CONTIGUOUS_MEMORY_FORMAT);
-  auto osize = compute_output_size(input.sizes(), output_size, scale_factors);
-  auto scale_d = get_scale_value(scale_factors, 0);
-  auto scale_h = get_scale_value(scale_factors, 1);
-  auto scale_w = get_scale_value(scale_factors, 2);
-  upsample_trilinear3d_out_cuda_template(output, input, osize, align_corners, scale_d, scale_h, scale_w);
-  return output;
-}
-
-Tensor upsample_trilinear3d_backward_cuda(
-    const Tensor& grad_output,
-    c10::optional<IntArrayRef> output_size,
-    IntArrayRef input_size,
-    bool align_corners,
-    c10::optional<ArrayRef<double>> scale_factors) {
-  // Nondeterministic because of atomicAdd usage
-  globalContext().alertNotDeterministic("upsample_trilinear3d_backward_cuda");
-  auto osize = compute_output_size(input_size, output_size, scale_factors);
-  auto scale_d = get_scale_value(scale_factors, 0);
-  auto scale_h = get_scale_value(scale_factors, 1);
-  auto scale_w = get_scale_value(scale_factors, 2);
-  auto grad_input = at::empty_like(grad_output, LEGACY_CONTIGUOUS_MEMORY_FORMAT);
-  upsample_trilinear3d_backward_out_cuda_template(
-      grad_input, grad_output, osize, input_size, align_corners, scale_d, scale_h, scale_w);
-  return grad_input;
 }
 
 } // namespace native

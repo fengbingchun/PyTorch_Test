@@ -1,4 +1,3 @@
-import collections.abc
 import contextlib
 import functools
 import importlib
@@ -6,17 +5,23 @@ import inspect
 import itertools
 import os
 import pathlib
+import random
+import shutil
+import string
+import struct
+import tarfile
 import unittest
 import unittest.mock
+import zipfile
+from collections import defaultdict
 from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple, Union
 
 import PIL
 import PIL.Image
-
+import pytest
 import torch
 import torchvision.datasets
 import torchvision.io
-
 from common_utils import get_tmp_dir, disable_console_output
 
 
@@ -32,15 +37,18 @@ __all__ = [
     "create_image_folder",
     "create_video_file",
     "create_video_folder",
+    "make_tar",
+    "make_zip",
+    "create_random_string",
 ]
 
 
-class UsageError(RuntimeError):
+class UsageError(Exception):
     """Should be raised in case an error happens in the setup rather than the test."""
 
 
 class LazyImporter:
-    r"""Lazy importer for additional dependicies.
+    r"""Lazy importer for additional dependencies.
 
     Some datasets require additional packages that are no direct dependencies of torchvision. Instances of this class
     provide modules listed in MODULES as attributes. They are only imported when accessed.
@@ -49,32 +57,49 @@ class LazyImporter:
     MODULES = (
         "av",
         "lmdb",
-        "pandas",
         "pycocotools",
         "requests",
         "scipy.io",
+        "scipy.sparse",
+        "h5py",
     )
 
     def __init__(self):
-        cls = type(self)
+        modules = defaultdict(list)
         for module in self.MODULES:
-            # We need the quirky 'module=module' argument to the lambda since otherwise the lookup for 'module' in this
-            # scope would happen at runtime rather than at definition. Thus, without it, every property would try to
-            # import the last 'module' in MODULES.
-            setattr(cls, module.split(".", 1)[0], property(lambda self, module=module: LazyImporter._import(module)))
+            module, *submodules = module.split(".", 1)
+            if submodules:
+                modules[module].append(submodules[0])
+            else:
+                # This introduces the module so that it is known when we later iterate over the dictionary.
+                modules.__missing__(module)
+
+        for module, submodules in modules.items():
+            # We need the quirky 'module=module' and submodules=submodules arguments to the lambda since otherwise the
+            # lookup for these would happen at runtime rather than at definition. Thus, without it, every property
+            # would try to import the last item in 'modules'
+            setattr(
+                type(self),
+                module,
+                property(lambda self, module=module, submodules=submodules: LazyImporter._import(module, submodules)),
+            )
 
     @staticmethod
-    def _import(module):
+    def _import(package, subpackages):
         try:
-            importlib.import_module(module)
-            return importlib.import_module(module.split(".", 1)[0])
+            module = importlib.import_module(package)
         except ImportError as error:
             raise UsageError(
-                f"Failed to import module '{module}'. "
-                f"This probably means that the current test case needs '{module}' installed, "
+                f"Failed to import module '{package}'. "
+                f"This probably means that the current test case needs '{package}' installed, "
                 f"but it is not a dependency of torchvision. "
-                f"You need to install it manually, for example 'pip install {module}'."
+                f"You need to install it manually, for example 'pip install {package}'."
             ) from error
+
+        for name in subpackages:
+            importlib.import_module(f".{name}", package=package)
+
+        return module
 
 
 lazy_importer = LazyImporter()
@@ -93,30 +118,48 @@ def requires_lazy_imports(*modules):
     return outer_wrapper
 
 
-# As of Python 3.7 this is provided by contextlib
-# https://docs.python.org/3.7/library/contextlib.html#contextlib.nullcontext
-# TODO: If the minimum Python requirement is >= 3.7, replace this
-@contextlib.contextmanager
-def nullcontext(enter_result=None):
-    yield enter_result
-
-
 def test_all_configs(test):
     """Decorator to run test against all configurations.
 
-    Add this as decorator to an arbitrary test to run it against all configurations. The current configuration is
-    provided as the first parameter:
+    Add this as decorator to an arbitrary test to run it against all configurations. This includes
+    :attr:`DatasetTestCase.DEFAULT_CONFIG` and :attr:`DatasetTestCase.ADDITIONAL_CONFIGS`.
+
+    The current configuration is provided as the first parameter for the test:
 
     .. code-block::
 
-        @test_all_configs
+        @test_all_configs()
         def test_foo(self, config):
             pass
+
+    .. note::
+
+        This will try to remove duplicate configurations. During this process it will not not preserve a potential
+        ordering of the configurations or an inner ordering of a configuration.
     """
+
+    def maybe_remove_duplicates(configs):
+        try:
+            return [dict(config_) for config_ in {tuple(sorted(config.items())) for config in configs}]
+        except TypeError:
+            # A TypeError will be raised if a value of any config is not hashable, e.g. a list. In that case duplicate
+            # removal would be a lot more elaborate and we simply bail out.
+            return configs
 
     @functools.wraps(test)
     def wrapper(self):
-        for config in self.CONFIGS:
+        configs = []
+        if self.DEFAULT_CONFIG is not None:
+            configs.append(self.DEFAULT_CONFIG)
+        if self.ADDITIONAL_CONFIGS is not None:
+            configs.extend(self.ADDITIONAL_CONFIGS)
+
+        if not configs:
+            configs = [self._KWARG_DEFAULTS.copy()]
+        else:
+            configs = maybe_remove_duplicates(configs)
+
+        for config in configs:
             with self.subTest(**config):
                 test(self, config)
 
@@ -148,13 +191,18 @@ class DatasetTestCase(unittest.TestCase):
         - DATASET_CLASS (torchvision.datasets.VisionDataset): Class of dataset to be tested.
         - FEATURE_TYPES (Sequence[Any]): Types of the elements returned by index access of the dataset. Instead of
             providing these manually, you can instead subclass ``ImageDatasetTestCase`` or ``VideoDatasetTestCase```to
-            get a reasonable default, that should work for most cases.
+            get a reasonable default, that should work for most cases. Each entry of the sequence may be a tuple,
+            to indicate multiple possible values.
 
     Optionally, you can overwrite the following class attributes:
 
-        - CONFIGS (Sequence[Dict[str, Any]]): Additional configs that should be tested. Each dictonary can contain an
-            arbitrary combination of dataset parameters that are **not** ``transform``, ``target_transform``,
-            ``transforms``, or ``download``. The first element will be used as default configuration.
+        - DEFAULT_CONFIG (Dict[str, Any]): Config that will be used by default. If omitted, this defaults to all
+            keyword arguments of the dataset minus ``transform``, ``target_transform``, ``transforms``, and
+            ``download``. Overwrite this if you want to use a default value for a parameter for which the dataset does
+            not provide one.
+        - ADDITIONAL_CONFIGS (Sequence[Dict[str, Any]]): Additional configs that should be tested. Each dictionary can
+            contain an arbitrary combination of dataset parameters that are **not** ``transform``, ``target_transform``,
+            ``transforms``, or ``download``.
         - REQUIRED_PACKAGES (Iterable[str]): Additional dependencies to use the dataset. If these packages are not
             available, the tests are skipped.
 
@@ -165,7 +213,8 @@ class DatasetTestCase(unittest.TestCase):
 
     Without further configuration, the testcase will test if
 
-    1. the dataset raises a ``RuntimeError`` if the data files are not found,
+    1. the dataset raises a :class:`FileNotFoundError` or a :class:`RuntimeError` if the data files are not found or
+       corrupted,
     2. the dataset inherits from `torchvision.datasets.VisionDataset`,
     3. the dataset can be turned into a string,
     4. the feature types of a returned example matches ``FEATURE_TYPES``,
@@ -203,20 +252,31 @@ class DatasetTestCase(unittest.TestCase):
     DATASET_CLASS = None
     FEATURE_TYPES = None
 
-    CONFIGS = None
+    DEFAULT_CONFIG = None
+    ADDITIONAL_CONFIGS = None
     REQUIRED_PACKAGES = None
 
+    # These keyword arguments are checked by test_transforms in case they are available in DATASET_CLASS.
     _TRANSFORM_KWARGS = {
         "transform",
         "target_transform",
         "transforms",
     }
+    # These keyword arguments get a 'special' treatment and should not be set in DEFAULT_CONFIG or ADDITIONAL_CONFIGS.
     _SPECIAL_KWARGS = {
         *_TRANSFORM_KWARGS,
         "download",
     }
+
+    # These fields are populated during setupClass() within _populate_private_class_attributes()
+
+    # This will be a dictionary containing all keyword arguments with their respective default values extracted from
+    # the dataset constructor.
+    _KWARG_DEFAULTS = None
+    # This will be a set of all _SPECIAL_KWARGS that the dataset constructor takes.
     _HAS_SPECIAL_KWARG = None
 
+    # These functions are disabled during dataset creation in create_dataset().
     _CHECK_FUNCTIONS = {
         "check_md5",
         "check_integrity",
@@ -228,27 +288,43 @@ class DatasetTestCase(unittest.TestCase):
         "download_and_extract_archive",
     }
 
-    def inject_fake_data(
-        self, tmpdir: str, config: Dict[str, Any]
-    ) -> Union[int, Dict[str, Any], Tuple[Sequence[Any], Union[int, Dict[str, Any]]]]:
-        """Inject fake data for dataset into a temporary directory.
+    def dataset_args(self, tmpdir: str, config: Dict[str, Any]) -> Sequence[Any]:
+        """Define positional arguments passed to the dataset.
+
+        .. note::
+
+            The default behavior is only valid if the dataset to be tested has ``root`` as the only required parameter.
+            Otherwise you need to overwrite this method.
 
         Args:
             tmpdir (str): Path to a temporary directory. For most cases this acts as root directory for the dataset
                 to be created and in turn also for the fake data injected here.
-            config (Dict[str, Any]): Configuration that will be used to create the dataset.
+            config (Dict[str, Any]): Configuration that will be passed to the dataset constructor. It provides at least
+                fields for all dataset parameters with default values.
+
+        Returns:
+            (Tuple[str]): ``tmpdir`` which corresponds to ``root`` for most datasets.
+        """
+        return (tmpdir,)
+
+    def inject_fake_data(self, tmpdir: str, config: Dict[str, Any]) -> Union[int, Dict[str, Any]]:
+        """Inject fake data for dataset into a temporary directory.
+
+        During the creation of the dataset the download and extract logic is disabled. Thus, the fake data injected
+        here needs to resemble the raw data, i.e. the state of the dataset directly after the files are downloaded and
+        potentially extracted.
+
+        Args:
+            tmpdir (str): Path to a temporary directory. For most cases this acts as root directory for the dataset
+                to be created and in turn also for the fake data injected here.
+            config (Dict[str, Any]): Configuration that will be passed to the dataset constructor. It provides at least
+                fields for all dataset parameters with default values.
 
         Needs to return one of the following:
 
-            1. (int): Number of examples in the dataset to be created,
+            1. (int): Number of examples in the dataset to be created, or
             2. (Dict[str, Any]): Additional information about the injected fake data. Must contain the field
-                ``"num_examples"`` that corresponds to the number of examples in the dataset to be created, or
-            3. (Tuple[Sequence[Any], Union[int, Dict[str, Any]]]): Additional required parameters that are passed to
-                the dataset constructor. The second element corresponds to cases 1. and 2.
-
-        If no ``args`` is returned (case 1. and 2.), the ``tmp_dir`` is passed as first parameter to the dataset
-        constructor. In most cases this corresponds to ``root``. If the dataset has more parameters without default
-        values you need to explicitly pass them as explained in case 3.
+                ``"num_examples"`` that corresponds to the number of examples in the dataset to be created.
         """
         raise NotImplementedError("You need to provide fake data in order for the tests to run.")
 
@@ -257,18 +333,25 @@ class DatasetTestCase(unittest.TestCase):
         self,
         config: Optional[Dict[str, Any]] = None,
         inject_fake_data: bool = True,
-        disable_download_extract: Optional[bool] = None,
+        patch_checks: Optional[bool] = None,
         **kwargs: Any,
     ) -> Iterator[Tuple[torchvision.datasets.VisionDataset, Dict[str, Any]]]:
         r"""Create the dataset in a temporary directory.
 
+        The configuration passed to the dataset is populated to contain at least all parameters with default values.
+        For this the following order of precedence is used:
+
+        1. Parameters in :attr:`kwargs`.
+        2. Configuration in :attr:`config`.
+        3. Configuration in :attr:`~DatasetTestCase.DEFAULT_CONFIG`.
+        4. Default parameters of the dataset.
+
         Args:
-            config (Optional[Dict[str, Any]]): Configuration that will be used to create the dataset. If omitted, the
-                default configuration is used.
+            config (Optional[Dict[str, Any]]): Configuration that will be used to create the dataset.
             inject_fake_data (bool): If ``True`` (default) inject the fake data with :meth:`.inject_fake_data` before
                 creating the dataset.
-            disable_download_extract (Optional[bool]): If ``True`` disable download and extract logic while creating
-                the dataset. If ``None`` (default) this takes the same value as ``inject_fake_data``.
+            patch_checks (Optional[bool]): If ``True`` disable integrity check logic while creating the dataset. If
+                omitted defaults to the same value as ``inject_fake_data``.
             **kwargs (Any): Additional parameters passed to the dataset. These parameters take precedence in case they
                 overlap with ``config``.
 
@@ -277,47 +360,33 @@ class DatasetTestCase(unittest.TestCase):
             info (Dict[str, Any]): Additional information about the injected fake data. See :meth:`.inject_fake_data`
                 for details.
         """
-        if config is None:
-            config = self.CONFIGS[0].copy()
+        if patch_checks is None:
+            patch_checks = inject_fake_data
 
         special_kwargs, other_kwargs = self._split_kwargs(kwargs)
-        config.update(other_kwargs)
 
-        if disable_download_extract is None:
-            disable_download_extract = inject_fake_data
+        complete_config = self._KWARG_DEFAULTS.copy()
+        if self.DEFAULT_CONFIG:
+            complete_config.update(self.DEFAULT_CONFIG)
+        if config:
+            complete_config.update(config)
+        if other_kwargs:
+            complete_config.update(other_kwargs)
+
+        if "download" in self._HAS_SPECIAL_KWARG and special_kwargs.get("download", False):
+            # override download param to False param if its default is truthy
+            special_kwargs["download"] = False
+
+        patchers = self._patch_download_extract()
+        if patch_checks:
+            patchers.update(self._patch_checks())
 
         with get_tmp_dir() as tmpdir:
-            output = self.inject_fake_data(tmpdir, config) if inject_fake_data else None
-            if output is None:
-                raise UsageError(
-                    "The method 'inject_fake_data' needs to return at least an integer indicating the number of "
-                    "examples for the current configuration."
-                )
+            args = self.dataset_args(tmpdir, complete_config)
+            info = self._inject_fake_data(tmpdir, complete_config) if inject_fake_data else None
 
-            if isinstance(output, collections.abc.Sequence) and len(output) == 2:
-                args, info = output
-            else:
-                args = (tmpdir,)
-                info = output
-
-            if isinstance(info, int):
-                info = dict(num_examples=info)
-            elif isinstance(info, dict):
-                if "num_examples" not in info:
-                    raise UsageError(
-                        "The information dictionary returned by the method 'inject_fake_data' must contain a "
-                        "'num_examples' field that holds the number of examples for the current configuration."
-                    )
-            else:
-                raise UsageError(
-                    f"The additional information returned by the method 'inject_fake_data' must be either an integer "
-                    f"indicating the number of examples for the current configuration or a dictionary with the the "
-                    f"same content. Got {type(info)} instead."
-                )
-
-            cm = self._disable_download_extract if disable_download_extract else nullcontext
-            with cm(special_kwargs), disable_console_output():
-                dataset = self.DATASET_CLASS(*args, **config, **special_kwargs)
+            with self._maybe_apply_patches(patchers), disable_console_output():
+                dataset = self.DATASET_CLASS(*args, **complete_config, **special_kwargs)
 
             yield dataset, info
 
@@ -343,28 +412,73 @@ class DatasetTestCase(unittest.TestCase):
 
     @classmethod
     def _populate_private_class_attributes(cls):
-        argspec = inspect.getfullargspec(cls.DATASET_CLASS.__init__)
-        cls._HAS_SPECIAL_KWARG = {name for name in cls._SPECIAL_KWARGS if name in argspec.args}
+        defaults = []
+        for cls_ in cls.DATASET_CLASS.__mro__:
+            if cls_ is torchvision.datasets.VisionDataset:
+                break
+
+            argspec = inspect.getfullargspec(cls_.__init__)
+
+            if not argspec.defaults:
+                continue
+
+            defaults.append(
+                {
+                    kwarg: default
+                    for kwarg, default in zip(argspec.args[-len(argspec.defaults) :], argspec.defaults)
+                    if not kwarg.startswith("_")
+                }
+            )
+
+            if not argspec.varkw:
+                break
+
+        kwarg_defaults = dict()
+        for config in reversed(defaults):
+            kwarg_defaults.update(config)
+
+        has_special_kwargs = set()
+        for name in cls._SPECIAL_KWARGS:
+            if name not in kwarg_defaults:
+                continue
+
+            del kwarg_defaults[name]
+            has_special_kwargs.add(name)
+
+        cls._KWARG_DEFAULTS = kwarg_defaults
+        cls._HAS_SPECIAL_KWARG = has_special_kwargs
 
     @classmethod
     def _process_optional_public_class_attributes(cls):
-        argspec = inspect.getfullargspec(cls.DATASET_CLASS.__init__)
-        if cls.CONFIGS is None:
-            config = {
-                kwarg: default
-                for kwarg, default in zip(argspec.args[-len(argspec.defaults):], argspec.defaults)
-                if kwarg not in cls._SPECIAL_KWARGS
-            }
-            cls.CONFIGS = (config,)
+        def check_config(config, name):
+            special_kwargs = tuple(f"'{name}'" for name in cls._SPECIAL_KWARGS if name in config)
+            if special_kwargs:
+                raise UsageError(
+                    f"{name} contains a value for the parameter(s) {', '.join(special_kwargs)}. "
+                    f"These are handled separately by the test case and should not be set here. "
+                    f"If you need to test some custom behavior regarding these parameters, "
+                    f"you need to write a custom test (*not* test case), e.g. test_custom_transform()."
+                )
 
-        if cls.REQUIRED_PACKAGES is not None:
-            try:
-                for pkg in cls.REQUIRED_PACKAGES:
+        if cls.DEFAULT_CONFIG is not None:
+            check_config(cls.DEFAULT_CONFIG, "DEFAULT_CONFIG")
+
+        if cls.ADDITIONAL_CONFIGS is not None:
+            for idx, config in enumerate(cls.ADDITIONAL_CONFIGS):
+                check_config(config, f"CONFIGS[{idx}]")
+
+        if cls.REQUIRED_PACKAGES:
+            missing_pkgs = []
+            for pkg in cls.REQUIRED_PACKAGES:
+                try:
                     importlib.import_module(pkg)
-            except ImportError as error:
+                except ImportError:
+                    missing_pkgs.append(f"'{pkg}'")
+
+            if missing_pkgs:
                 raise unittest.SkipTest(
-                    f"The package '{error.name}' is required to load the dataset '{cls.DATASET_CLASS.__name__}' but is "
-                    f"not installed."
+                    f"The package(s) {', '.join(missing_pkgs)} are required to load the dataset "
+                    f"'{cls.DATASET_CLASS.__name__}', but are not installed."
                 )
 
     def _split_kwargs(self, kwargs):
@@ -372,65 +486,82 @@ class DatasetTestCase(unittest.TestCase):
         other_kwargs = {key: special_kwargs.pop(key) for key in set(special_kwargs.keys()) - self._SPECIAL_KWARGS}
         return special_kwargs, other_kwargs
 
-    @contextlib.contextmanager
-    def _disable_download_extract(self, special_kwargs):
-        inject_download_kwarg = "download" in self._HAS_SPECIAL_KWARG and "download" not in special_kwargs
-        if inject_download_kwarg:
-            special_kwargs["download"] = False
+    def _inject_fake_data(self, tmpdir, config):
+        info = self.inject_fake_data(tmpdir, config)
+        if info is None:
+            raise UsageError(
+                "The method 'inject_fake_data' needs to return at least an integer indicating the number of "
+                "examples for the current configuration."
+            )
+        elif isinstance(info, int):
+            info = dict(num_examples=info)
+        elif not isinstance(info, dict):
+            raise UsageError(
+                f"The additional information returned by the method 'inject_fake_data' must be either an "
+                f"integer indicating the number of examples for the current configuration or a dictionary with "
+                f"the same content. Got {type(info)} instead."
+            )
+        elif "num_examples" not in info:
+            raise UsageError(
+                "The information dictionary returned by the method 'inject_fake_data' must contain a "
+                "'num_examples' field that holds the number of examples for the current configuration."
+            )
+        return info
 
+    def _patch_download_extract(self):
         module = inspect.getmodule(self.DATASET_CLASS).__name__
+        return {unittest.mock.patch(f"{module}.{function}") for function in self._DOWNLOAD_EXTRACT_FUNCTIONS}
+
+    def _patch_checks(self):
+        module = inspect.getmodule(self.DATASET_CLASS).__name__
+        return {unittest.mock.patch(f"{module}.{function}", return_value=True) for function in self._CHECK_FUNCTIONS}
+
+    @contextlib.contextmanager
+    def _maybe_apply_patches(self, patchers):
         with contextlib.ExitStack() as stack:
             mocks = {}
-            for function, kwargs in itertools.chain(
-                zip(self._CHECK_FUNCTIONS, [dict(return_value=True)] * len(self._CHECK_FUNCTIONS)),
-                zip(self._DOWNLOAD_EXTRACT_FUNCTIONS, [dict()] * len(self._DOWNLOAD_EXTRACT_FUNCTIONS)),
-            ):
+            for patcher in patchers:
                 with contextlib.suppress(AttributeError):
-                    patcher = unittest.mock.patch(f"{module}.{function}", **kwargs)
-                    mocks[function] = stack.enter_context(patcher)
+                    mocks[patcher.target] = stack.enter_context(patcher)
+            yield mocks
 
-            try:
-                yield mocks
-            finally:
-                if inject_download_kwarg:
-                    del special_kwargs["download"]
-
-    def test_not_found(self):
-        with self.assertRaises(RuntimeError):
+    def test_not_found_or_corrupted(self):
+        with pytest.raises((FileNotFoundError, RuntimeError)):
             with self.create_dataset(inject_fake_data=False):
                 pass
 
     def test_smoke(self):
         with self.create_dataset() as (dataset, _):
-            self.assertIsInstance(dataset, torchvision.datasets.VisionDataset)
+            assert isinstance(dataset, torchvision.datasets.VisionDataset)
 
     @test_all_configs
     def test_str_smoke(self, config):
         with self.create_dataset(config) as (dataset, _):
-            self.assertIsInstance(str(dataset), str)
+            assert isinstance(str(dataset), str)
 
     @test_all_configs
     def test_feature_types(self, config):
         with self.create_dataset(config) as (dataset, _):
             example = dataset[0]
 
-            actual = len(example)
-            expected = len(self.FEATURE_TYPES)
-            self.assertEqual(
-                actual,
-                expected,
-                f"The number of the returned features does not match the the number of elements in in FEATURE_TYPES: "
-                f"{actual} != {expected}",
-            )
+            if len(self.FEATURE_TYPES) > 1:
+                actual = len(example)
+                expected = len(self.FEATURE_TYPES)
+                assert (
+                    actual == expected
+                ), "The number of the returned features does not match the the number of elements in FEATURE_TYPES: "
+                f"{actual} != {expected}"
+            else:
+                example = (example,)
 
             for idx, (feature, expected_feature_type) in enumerate(zip(example, self.FEATURE_TYPES)):
                 with self.subTest(idx=idx):
-                    self.assertIsInstance(feature, expected_feature_type)
+                    assert isinstance(feature, expected_feature_type)
 
     @test_all_configs
     def test_num_examples(self, config):
         with self.create_dataset(config) as (dataset, info):
-            self.assertEqual(len(dataset), info["num_examples"])
+            assert len(dataset) == info["num_examples"]
 
     @test_all_configs
     def test_transforms(self, config):
@@ -461,13 +592,13 @@ class ImageDatasetTestCase(DatasetTestCase):
         self,
         config: Optional[Dict[str, Any]] = None,
         inject_fake_data: bool = True,
-        disable_download_extract: Optional[bool] = None,
+        patch_checks: Optional[bool] = None,
         **kwargs: Any,
     ) -> Iterator[Tuple[torchvision.datasets.VisionDataset, Dict[str, Any]]]:
         with super().create_dataset(
             config=config,
             inject_fake_data=inject_fake_data,
-            disable_download_extract=disable_download_extract,
+            patch_checks=patch_checks,
             **kwargs,
         ) as (dataset, info):
             # PIL.Image.open() only loads the image meta data upfront and keeps the file open until the first access
@@ -496,13 +627,37 @@ class ImageDatasetTestCase(DatasetTestCase):
 class VideoDatasetTestCase(DatasetTestCase):
     """Abstract base class for video dataset testcases.
 
-    - Overwrites the FEATURE_TYPES class attribute to expect two :class:`torch.Tensor` s for the video and audio as
+    - Overwrites the 'FEATURE_TYPES' class attribute to expect two :class:`torch.Tensor` s for the video and audio as
       well as an integer label.
-    - Overwrites the REQUIRED_PACKAGES class attribute to require PyAV (``av``).
+    - Overwrites the 'REQUIRED_PACKAGES' class attribute to require PyAV (``av``).
+    - Adds the 'DEFAULT_FRAMES_PER_CLIP' class attribute. If no 'frames_per_clip' is provided by 'inject_fake_data()'
+        and it is the last parameter without a default value in the dataset constructor, the value of the
+        'DEFAULT_FRAMES_PER_CLIP' class attribute is appended to the output.
     """
 
     FEATURE_TYPES = (torch.Tensor, torch.Tensor, int)
     REQUIRED_PACKAGES = ("av",)
+
+    DEFAULT_FRAMES_PER_CLIP = 1
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.dataset_args = self._set_default_frames_per_clip(self.dataset_args)
+
+    def _set_default_frames_per_clip(self, inject_fake_data):
+        argspec = inspect.getfullargspec(self.DATASET_CLASS.__init__)
+        args_without_default = argspec.args[1 : (-len(argspec.defaults) if argspec.defaults else None)]
+        frames_per_clip_last = args_without_default[-1] == "frames_per_clip"
+
+        @functools.wraps(inject_fake_data)
+        def wrapper(tmpdir, config):
+            args = inject_fake_data(tmpdir, config)
+            if frames_per_clip_last and len(args) == len(args_without_default) - 1:
+                args = (*args, self.DEFAULT_FRAMES_PER_CLIP)
+
+            return args
+
+        return wrapper
 
 
 def create_image_or_video_tensor(size: Sequence[int]) -> torch.Tensor:
@@ -540,7 +695,13 @@ def create_image_file(
 
     image = create_image_or_video_tensor(size)
     file = pathlib.Path(root) / name
-    PIL.Image.fromarray(image.permute(2, 1, 0).numpy()).save(file)
+
+    # torch (num_channels x height x width) -> PIL (width x height x num_channels)
+    image = image.permute(2, 1, 0)
+    # For grayscale images PIL doesn't use a channel dimension
+    if image.shape[2] == 1:
+        image = torch.squeeze(image, 2)
+    PIL.Image.fromarray(image.numpy()).save(file, **kwargs)
     return file
 
 
@@ -579,7 +740,7 @@ def create_image_folder(
             return (num_channels, height, width)
 
     root = pathlib.Path(root) / name
-    os.makedirs(root)
+    os.makedirs(root, exist_ok=True)
 
     return [
         create_image_file(root, file_name_fn(idx), size=size(idx) if callable(size) else size, **kwargs)
@@ -642,10 +803,10 @@ def create_video_folder(
     """Create a folder of random videos.
 
     Args:
-        root (Union[str, pathlib.Path]): Root directory the image folder will be placed in.
-        name (Union[str, pathlib.Path]): Name of the image folder.
+        root (Union[str, pathlib.Path]): Root directory the video folder will be placed in.
+        name (Union[str, pathlib.Path]): Name of the video folder.
         file_name_fn (Callable[[int], str]): Should return a file name if called with the file index.
-        num_examples (int): Number of images to create.
+        num_examples (int): Number of videos to create.
         size (Optional[Union[Sequence[int], int, Callable[[int], Union[Sequence[int], int]]]]): Size of the videos. If
             callable, will be called with the index of the corresponding file. If omitted, a random even height and
             width between 4 and 10 pixels is selected on a per-video basis.
@@ -673,9 +834,121 @@ def create_video_folder(
             return (num_frames, num_channels, height, width)
 
     root = pathlib.Path(root) / name
-    os.makedirs(root)
+    os.makedirs(root, exist_ok=True)
 
     return [
-        create_video_file(root, file_name_fn(idx), size=size(idx) if callable(size) else size)
+        create_video_file(root, file_name_fn(idx), size=size(idx) if callable(size) else size, **kwargs)
         for idx in range(num_examples)
     ]
+
+
+def _split_files_or_dirs(root, *files_or_dirs):
+    files = set()
+    dirs = set()
+    for file_or_dir in files_or_dirs:
+        path = pathlib.Path(file_or_dir)
+        if not path.is_absolute():
+            path = root / path
+        if path.is_file():
+            files.add(path)
+        else:
+            dirs.add(path)
+            for sub_file_or_dir in path.glob("**/*"):
+                if sub_file_or_dir.is_file():
+                    files.add(sub_file_or_dir)
+                else:
+                    dirs.add(sub_file_or_dir)
+
+    if root in dirs:
+        dirs.remove(root)
+
+    return files, dirs
+
+
+def _make_archive(root, name, *files_or_dirs, opener, adder, remove=True):
+    archive = pathlib.Path(root) / name
+    if not files_or_dirs:
+        # We need to invoke `Path.with_suffix("")`, since call only applies to the last suffix if multiple suffixes are
+        # present. For example, `pathlib.Path("foo.tar.gz").with_suffix("")` results in `foo.tar`.
+        file_or_dir = archive
+        for _ in range(len(archive.suffixes)):
+            file_or_dir = file_or_dir.with_suffix("")
+        if file_or_dir.exists():
+            files_or_dirs = (file_or_dir,)
+        else:
+            raise ValueError("No file or dir provided.")
+
+    files, dirs = _split_files_or_dirs(root, *files_or_dirs)
+
+    with opener(archive) as fh:
+        for file in sorted(files):
+            adder(fh, file, file.relative_to(root))
+
+    if remove:
+        for file in files:
+            os.remove(file)
+        for dir in dirs:
+            shutil.rmtree(dir, ignore_errors=True)
+
+    return archive
+
+
+def make_tar(root, name, *files_or_dirs, remove=True, compression=None):
+    # TODO: detect compression from name
+    return _make_archive(
+        root,
+        name,
+        *files_or_dirs,
+        opener=lambda archive: tarfile.open(archive, f"w:{compression}" if compression else "w"),
+        adder=lambda fh, file, relative_file: fh.add(file, arcname=relative_file),
+        remove=remove,
+    )
+
+
+def make_zip(root, name, *files_or_dirs, remove=True):
+    return _make_archive(
+        root,
+        name,
+        *files_or_dirs,
+        opener=lambda archive: zipfile.ZipFile(archive, "w"),
+        adder=lambda fh, file, relative_file: fh.write(file, arcname=relative_file),
+        remove=remove,
+    )
+
+
+def create_random_string(length: int, *digits: str) -> str:
+    """Create a random string.
+
+    Args:
+        length (int): Number of characters in the generated string.
+        *characters (str): Characters to sample from. If omitted defaults to :attr:`string.ascii_lowercase`.
+    """
+    if not digits:
+        digits = string.ascii_lowercase
+    else:
+        digits = "".join(itertools.chain(*digits))
+
+    return "".join(random.choice(digits) for _ in range(length))
+
+
+def make_fake_pfm_file(h, w, file_name):
+    values = list(range(3 * h * w))
+    # Note: we pack everything in little endian: -1.0, and "<"
+    content = f"PF \n{w} {h} \n-1.0\n".encode() + struct.pack("<" + "f" * len(values), *values)
+    with open(file_name, "wb") as f:
+        f.write(content)
+
+
+def make_fake_flo_file(h, w, file_name):
+    """Creates a fake flow file in .flo format."""
+    # Everything needs to be in little Endian according to
+    # https://vision.middlebury.edu/flow/code/flow-code/README.txt
+    values = list(range(2 * h * w))
+    content = (
+        struct.pack("<4c", *(c.encode() for c in "PIEH"))
+        + struct.pack("<i", w)
+        + struct.pack("<i", h)
+        + struct.pack("<" + "f" * len(values), *values)
+    )
+    with open(file_name, "wb") as f:
+        f.write(content)

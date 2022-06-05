@@ -1,23 +1,25 @@
 import contextlib
 import itertools
+import tempfile
 import time
 import unittest.mock
+import warnings
 from datetime import datetime
 from distutils import dir_util
 from os import path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import urlopen, Request
-import tempfile
-import warnings
 
 import pytest
-
 from torchvision import datasets
-from torchvision.datasets.utils import download_url, check_integrity, download_file_from_google_drive, USER_AGENT
-
-from common_utils import get_tmp_dir
-from fakedata_generation import places365_root
+from torchvision.datasets.utils import (
+    download_url,
+    check_integrity,
+    download_file_from_google_drive,
+    _get_redirect_url,
+    USER_AGENT,
+)
 
 
 def limit_requests_per_time(min_secs_between_requests=2.0):
@@ -48,22 +50,28 @@ def limit_requests_per_time(min_secs_between_requests=2.0):
 urlopen = limit_requests_per_time()(urlopen)
 
 
-def resolve_redirects(max_redirects=3):
+def resolve_redirects(max_hops=3):
     def outer_wrapper(fn):
         def inner_wrapper(request, *args, **kwargs):
-            url = initial_url = request.full_url if isinstance(request, Request) else request
+            initial_url = request.full_url if isinstance(request, Request) else request
+            url = _get_redirect_url(initial_url, max_hops=max_hops)
 
-            for _ in range(max_redirects + 1):
-                response = fn(request, *args, **kwargs)
+            if url == initial_url:
+                return fn(request, *args, **kwargs)
 
-                if response.url == url or response.url is None:
-                    if url != initial_url:
-                        warnings.warn(f"The URL {initial_url} ultimately redirects to {url}.")
-                    return response
+            warnings.warn(f"The URL {initial_url} ultimately redirects to {url}.")
 
-                url = response.url
-            else:
-                raise RecursionError(f"Request to {initial_url} exceeded {max_redirects} redirects.")
+            if not isinstance(request, Request):
+                return fn(url, *args, **kwargs)
+
+            request_attrs = {
+                attr: getattr(request, attr) for attr in ("data", "headers", "origin_req_host", "unverifiable")
+            }
+            # the 'method' attribute does only exist if the request was created with it
+            if hasattr(request, "method"):
+                request_attrs["method"] = request.method
+
+            return fn(Request(url, **request_attrs), *args, **kwargs)
 
         return inner_wrapper
 
@@ -150,21 +158,20 @@ def assert_server_response_ok():
 
 
 def assert_url_is_accessible(url, timeout=5.0):
-    request = Request(url, headers={"method": "HEAD", "User-Agent": USER_AGENT})
+    request = Request(url, headers={"User-Agent": USER_AGENT}, method="HEAD")
     with assert_server_response_ok():
         urlopen(request, timeout=timeout)
 
 
-def assert_file_downloads_correctly(url, md5, timeout=5.0):
-    with get_tmp_dir() as root:
-        file = path.join(root, path.basename(url))
-        with assert_server_response_ok():
-            with open(file, "wb") as fh:
-                request = Request(url, headers={"User-Agent": USER_AGENT})
-                response = urlopen(request, timeout=timeout)
-                fh.write(response.read())
+def assert_file_downloads_correctly(url, md5, tmpdir, timeout=5.0):
+    file = path.join(tmpdir, path.basename(url))
+    with assert_server_response_ok():
+        with open(file, "wb") as fh:
+            request = Request(url, headers={"User-Agent": USER_AGENT})
+            response = urlopen(request, timeout=timeout)
+            fh.write(response.read())
 
-        assert check_integrity(file, md5=md5), "The MD5 checksums mismatch"
+    assert check_integrity(file, md5=md5), "The MD5 checksums mismatch"
 
 
 class DownloadConfig:
@@ -173,7 +180,7 @@ class DownloadConfig:
         self.md5 = md5
         self.id = id or url
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return self.id
 
 
@@ -209,14 +216,16 @@ def root():
 
 
 def places365():
-    with log_download_attempts(patch=False) as urls_and_md5s:
-        for split, small in itertools.product(("train-standard", "train-challenge", "val"), (False, True)):
-            with places365_root(split=split, small=small) as places365:
-                root, data = places365
-
-                datasets.Places365(root, split=split, small=small, download=True)
-
-    return make_download_configs(urls_and_md5s, name="Places365")
+    return itertools.chain(
+        *[
+            collect_download_configs(
+                lambda: datasets.Places365(ROOT, split=split, small=small, download=True),
+                name=f"Places365, {split}, {'small' if small else 'large'}",
+                file="places365",
+            )
+            for split, small in itertools.product(("train-standard", "train-challenge", "val"), (False, True))
+        ]
+    )
 
 
 def caltech101():
@@ -379,6 +388,38 @@ def widerface():
     )
 
 
+def kinetics():
+    return itertools.chain(
+        *[
+            collect_download_configs(
+                lambda: datasets.Kinetics(
+                    path.join(ROOT, f"Kinetics{num_classes}"),
+                    frames_per_clip=1,
+                    num_classes=num_classes,
+                    split=split,
+                    download=True,
+                ),
+                name=f"Kinetics, {num_classes}, {split}",
+                file="kinetics",
+            )
+            for num_classes, split in itertools.product(("400", "600", "700"), ("train", "val"))
+        ]
+    )
+
+
+def kitti():
+    return itertools.chain(
+        *[
+            collect_download_configs(
+                lambda train=train: datasets.Kitti(ROOT, train=train, download=True),
+                name=f"Kitti, {'train' if train else 'test'}",
+                file="kitti",
+            )
+            for train in (True, False)
+        ]
+    )
+
+
 def make_parametrize_kwargs(download_configs):
     argvalues = []
     ids = []
@@ -414,6 +455,8 @@ def make_parametrize_kwargs(download_configs):
             usps(),
             celeba(),
             widerface(),
+            kinetics(),
+            kitti(),
         )
     )
 )

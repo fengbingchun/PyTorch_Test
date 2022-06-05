@@ -1,8 +1,7 @@
-[submodule "third_party/warp_transducer/submodule"]
-	path = third_party/transducer/submodule
-	url = https://github.com/HawkAaron/warp-transducer
-	ignore = dirty
 [submodule "kaldi"]
 	path = third_party/kaldi/submodule
 	url = https://github.com/kaldi-asr/kaldi
 	ignore = dirty
+[submodule "third_party/kenlm/submodule"]
+	path = third_party/kenlm/submodule
+	url = https://github.com/kpu/kenlm

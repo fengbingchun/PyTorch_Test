@@ -14,8 +14,8 @@
 #   PYTORCH_VERSION_SUFFIX (e.g., +cpu)
 #   WHEEL_DIR (e.g., cu100/)
 #   CUDA_HOME (e.g., /usr/local/cuda-9.2, respected by torch.utils.cpp_extension)
-#   FORCE_CUDA (respected by torchvision setup.py)
-#   NVCC_FLAGS (respected by torchvision setup.py)
+#   USE_CUDA (respected by torchaudio setup.py)
+#   NVCC_FLAGS (respected by torchaudio setup.py)
 #
 # Precondition: CUDA versions are installed in their conventional locations in
 # /usr/local/cuda-*
@@ -35,34 +35,83 @@ setup_cuda() {
   export WHEEL_DIR="cpu/"
   # Wheel builds need suffixes (but not if they're on OS X, which never has suffix)
   if [[ "$BUILD_TYPE" == "wheel" ]] && [[ "$(uname)" != Darwin ]]; then
-    # The default CUDA has no suffix
-    if [[ "$CU_VERSION" != "cu100" ]]; then
-      export PYTORCH_VERSION_SUFFIX="+$CU_VERSION"
-    fi
+    export PYTORCH_VERSION_SUFFIX="+$CU_VERSION"
     # Match the suffix scheme of pytorch, unless this package does not have
     # CUDA builds (in which case, use default)
     if [[ -z "$NO_CUDA_PACKAGE" ]]; then
       export VERSION_SUFFIX="$PYTORCH_VERSION_SUFFIX"
-      # If the suffix is non-empty, we will use a wheel subdirectory
-      if [[ -n "$PYTORCH_VERSION_SUFFIX" ]]; then
-        export WHEEL_DIR="$PYTORCH_VERSION_SUFFIX/"
-      fi
+      export WHEEL_DIR="$CU_VERSION/"
     fi
   fi
 
   # Now work out the CUDA settings
   case "$CU_VERSION" in
+    cu115)
+      if [[ "$OSTYPE" == "msys" ]]; then
+        export CUDA_HOME="C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v11.5"
+      else
+        export CUDA_HOME=/usr/local/cuda-11.5/
+      fi
+      export TORCH_CUDA_ARCH_LIST="3.5;5.0+PTX;6.0;7.0;7.5;8.0;8.6"
+      ;;
+    cu113)
+      if [[ "$OSTYPE" == "msys" ]]; then
+        export CUDA_HOME="C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v11.3"
+      else
+        export CUDA_HOME=/usr/local/cuda-11.3/
+      fi
+      export TORCH_CUDA_ARCH_LIST="3.5;5.0+PTX;6.0;7.0;7.5;8.0;8.6"
+      ;;
+    cu112)
+      if [[ "$OSTYPE" == "msys" ]]; then
+        export CUDA_HOME="C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v11.2"
+      else
+        export CUDA_HOME=/usr/local/cuda-11.2/
+      fi
+      export TORCH_CUDA_ARCH_LIST="3.5;5.0+PTX;6.0;7.0;7.5;8.0;8.6"
+      ;;
+    cu111)
+      if [[ "$OSTYPE" == "msys" ]]; then
+        export CUDA_HOME="C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v11.1"
+      else
+        export CUDA_HOME=/usr/local/cuda-11.1/
+      fi
+      export TORCH_CUDA_ARCH_LIST="3.5;5.0+PTX;6.0;7.0;7.5;8.0;8.6"
+      ;;
+    cu110)
+      if [[ "$OSTYPE" == "msys" ]]; then
+        export CUDA_HOME="C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v11.0"
+      else
+        export CUDA_HOME=/usr/local/cuda-11.0/
+      fi
+      export TORCH_CUDA_ARCH_LIST="3.5;5.0+PTX;6.0;7.0;7.5;8.0"
+      ;;
+    cu102)
+      if [[ "$OSTYPE" == "msys" ]]; then
+        export CUDA_HOME="C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v10.2"
+      else
+        export CUDA_HOME=/usr/local/cuda-10.2/
+      fi
+      export TORCH_CUDA_ARCH_LIST="3.5;5.0+PTX;6.0;7.0;7.5"
+      ;;
+    cu101)
+      if [[ "$OSTYPE" == "msys" ]]; then
+        export CUDA_HOME="C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v10.1"
+      else
+        export CUDA_HOME=/usr/local/cuda-10.1/
+      fi
+      export TORCH_CUDA_ARCH_LIST="3.5;5.0+PTX;6.0;7.0;7.5"
+      ;;
     cu100)
       export CUDA_HOME=/usr/local/cuda-10.0/
-      export FORCE_CUDA=1
-      # Hard-coding gencode flags is temporary situation until
-      # https://github.com/pytorch/pytorch/pull/23408 lands
-      export NVCC_FLAGS="-gencode=arch=compute_35,code=sm_35 -gencode=arch=compute_50,code=sm_50 -gencode=arch=compute_60,code=sm_60 -gencode=arch=compute_70,code=sm_70 -gencode=arch=compute_75,code=sm_75 -gencode=arch=compute_50,code=compute_50"
+      export TORCH_CUDA_ARCH_LIST="3.5;5.0+PTX;6.0;7.0;7.5"
       ;;
     cu92)
       export CUDA_HOME=/usr/local/cuda-9.2/
-      export FORCE_CUDA=1
-      export NVCC_FLAGS="-gencode=arch=compute_35,code=sm_35 -gencode=arch=compute_50,code=sm_50 -gencode=arch=compute_60,code=sm_60 -gencode=arch=compute_70,code=sm_70 -gencode=arch=compute_50,code=compute_50"
+      export TORCH_CUDA_ARCH_LIST="3.5;5.0+PTX;6.0;7.0"
+      ;;
+    rocm*)
+      export USE_ROCM=1
       ;;
     cpu)
       ;;
@@ -71,6 +120,11 @@ setup_cuda() {
       exit 1
       ;;
   esac
+  if [[ -n "$CUDA_HOME" ]]; then
+    # Adds nvcc binary to the search path so that CMake's `find_package(CUDA)` will pick the right one
+    export PATH="$CUDA_HOME/bin:$PATH"
+    export USE_CUDA=1
+  fi
 }
 
 # Populate build version if necessary, and add version suffix
@@ -95,7 +149,7 @@ setup_build_version() {
 # Set some useful variables for OS X, if applicable
 setup_macos() {
   if [[ "$(uname)" == Darwin ]]; then
-    export MACOSX_DEPLOYMENT_TARGET=10.9 CC=clang CXX=clang++
+    export CC=clang CXX=clang++
   fi
 }
 
@@ -128,6 +182,7 @@ setup_wheel_python() {
     conda env remove -n "env$PYTHON_VERSION" || true
     conda create -yn "env$PYTHON_VERSION" python="$PYTHON_VERSION"
     conda activate "env$PYTHON_VERSION"
+    conda install --quiet -y pkg-config 'ffmpeg>=4.1'
   else
     case "$PYTHON_VERSION" in
       2.7)
@@ -142,6 +197,7 @@ setup_wheel_python() {
       3.7) python_abi=cp37-cp37m ;;
       3.8) python_abi=cp38-cp38 ;;
       3.9) python_abi=cp39-cp39 ;;
+      3.10) python_abi=cp310-cp310 ;;
       *)
         echo "Unrecognized PYTHON_VERSION=$PYTHON_VERSION"
         exit 1
@@ -184,10 +240,6 @@ setup_conda_pytorch_constraint() {
   else
     export CONDA_CHANNEL_FLAGS="${CONDA_CHANNEL_FLAGS} -c pytorch -c pytorch-test -c pytorch-nightly"
   fi
-  # Some dependencies for Python 3.9 are only on conda-forge
-  if [[ "${PYTHON_VERSION}" = "3.9" ]]; then
-    export CONDA_CHANNEL_FLAGS="${CONDA_CHANNEL_FLAGS} -c conda-forge"
-  fi
   if [[ "$CU_VERSION" == cpu ]]; then
     export CONDA_PYTORCH_BUILD_CONSTRAINT="- pytorch==$PYTORCH_VERSION${PYTORCH_VERSION_SUFFIX}"
     export CONDA_PYTORCH_CONSTRAINT="- pytorch==$PYTORCH_VERSION"
@@ -195,15 +247,41 @@ setup_conda_pytorch_constraint() {
     export CONDA_PYTORCH_BUILD_CONSTRAINT="- pytorch==${PYTORCH_VERSION}${PYTORCH_VERSION_SUFFIX}"
     export CONDA_PYTORCH_CONSTRAINT="- pytorch==${PYTORCH_VERSION}${PYTORCH_VERSION_SUFFIX}"
   fi
+  # TODO: Remove me later, see https://github.com/pytorch/pytorch/issues/62424 for more details
+  if [[ "$(uname)" == Darwin ]]; then
+    # Use less than equal to avoid version conflict in python=3.6 environment
+    export CONDA_EXTRA_BUILD_CONSTRAINT="- mkl<=2021.2.0"
+  fi
 }
 
 # Translate CUDA_VERSION into CUDA_CUDATOOLKIT_CONSTRAINT
 setup_conda_cudatoolkit_constraint() {
-  export CONDA_CPUONLY_FEATURE=""
+  export CONDA_BUILD_VARIANT="cuda"
   if [[ "$(uname)" == Darwin ]]; then
-    export CONDA_CUDATOOLKIT_CONSTRAINT=""
+    export CONDA_BUILD_VARIANT="cpu"
   else
     case "$CU_VERSION" in
+      cu115)
+        export CONDA_CUDATOOLKIT_CONSTRAINT="- cudatoolkit >=11.5,<11.6 # [not osx]"
+        ;;
+      cu113)
+        export CONDA_CUDATOOLKIT_CONSTRAINT="- cudatoolkit >=11.3,<11.4 # [not osx]"
+        ;;
+      cu112)
+        export CONDA_CUDATOOLKIT_CONSTRAINT="- cudatoolkit >=11.2,<11.3 # [not osx]"
+        ;;
+      cu111)
+        export CONDA_CUDATOOLKIT_CONSTRAINT="- cudatoolkit >=11.1,<11.2 # [not osx]"
+        ;;
+      cu110)
+        export CONDA_CUDATOOLKIT_CONSTRAINT="- cudatoolkit >=11.0,<11.1 # [not osx]"
+        ;;
+      cu102)
+        export CONDA_CUDATOOLKIT_CONSTRAINT="- cudatoolkit >=10.2,<10.3 # [not osx]"
+        ;;
+      cu101)
+        export CONDA_CUDATOOLKIT_CONSTRAINT="- cudatoolkit >=10.1,<10.2 # [not osx]"
+        ;;
       cu100)
         export CONDA_CUDATOOLKIT_CONSTRAINT="- cudatoolkit >=10.0,<10.1 # [not osx]"
         ;;
@@ -212,12 +290,22 @@ setup_conda_cudatoolkit_constraint() {
         ;;
       cpu)
         export CONDA_CUDATOOLKIT_CONSTRAINT=""
-        export CONDA_CPUONLY_FEATURE="- cpuonly"
+        export CONDA_BUILD_VARIANT="cpu"
         ;;
       *)
         echo "Unrecognized CU_VERSION=$CU_VERSION"
         exit 1
         ;;
     esac
+  fi
+}
+
+# Build the proper compiler package before building the final package
+setup_visual_studio_constraint() {
+  if [[ "$OSTYPE" == "msys" ]]; then
+      export VSTOOLCHAIN_PACKAGE=vs2019
+      export VSDEVCMD_ARGS=''
+      conda build $CONDA_CHANNEL_FLAGS --no-anaconda-upload packaging/$VSTOOLCHAIN_PACKAGE
+      cp packaging/$VSTOOLCHAIN_PACKAGE/conda_build_config.yaml packaging/torchaudio/conda_build_config.yaml
   fi
 }

@@ -31,12 +31,20 @@ architectures, and common image transformations for computer vision.
    :maxdepth: 2
    :caption: Package Reference
 
-   datasets
-   io
-   models
-   ops
    transforms
+   models
+   datasets
    utils
+   ops
+   io
+   feature_extraction
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Examples and training references
+
+   auto_examples/index
+   training_references
 
 .. automodule:: torchvision
    :members:
@@ -52,3 +60,9 @@ architectures, and common image transformations for computer vision.
    TorchElastic <https://pytorch.org/elastic/>
    TorchServe <https://pytorch.org/serve>
    PyTorch on XLA Devices <http://pytorch.org/xla/>
+
+
+Indices
+-------
+
+* :ref:`genindex`

@@ -7,16 +7,15 @@ from time import time
 
 import torch
 import torchaudio
+from ctc_decoders import GreedyDecoder
+from datasets import collate_factory, split_process_librispeech
+from languagemodels import LanguageModel
 from torch.optim import SGD, Adadelta, Adam, AdamW
 from torch.optim.lr_scheduler import ExponentialLR, ReduceLROnPlateau
 from torch.utils.data import DataLoader
 from torchaudio.datasets.utils import bg_iterator
+from torchaudio.functional import edit_distance
 from torchaudio.models.wav2letter import Wav2Letter
-
-from ctc_decoders import GreedyDecoder
-from datasets import collate_factory, split_process_librispeech
-from languagemodels import LanguageModel
-from metrics import levenshtein_distance
 from transforms import Normalize, UnsqueezeFirst
 from utils import MetricLogger, count_parameters, save_checkpoint
 
@@ -80,20 +79,14 @@ def parse_args():
         metavar="N",
         help="number of total epochs to run",
     )
-    parser.add_argument(
-        "--start-epoch", default=0, type=int, metavar="N", help="manual epoch number"
-    )
+    parser.add_argument("--start-epoch", default=0, type=int, metavar="N", help="manual epoch number")
     parser.add_argument(
         "--reduce-lr-valid",
         action="store_true",
         help="reduce learning rate based on validation loss",
     )
-    parser.add_argument(
-        "--normalize", action="store_true", help="normalize model input"
-    )
-    parser.add_argument(
-        "--progress-bar", action="store_true", help="use progress bar while training"
-    )
+    parser.add_argument("--normalize", action="store_true", help="normalize model input")
+    parser.add_argument("--progress-bar", action="store_true", help="use progress bar while training")
     parser.add_argument(
         "--decoder",
         metavar="D",
@@ -101,9 +94,7 @@ def parse_args():
         choices=["greedy"],
         help="decoder to use",
     )
-    parser.add_argument(
-        "--batch-size", default=128, type=int, metavar="N", help="mini-batch size"
-    )
+    parser.add_argument("--batch-size", default=128, type=int, metavar="N", help="mini-batch size")
     parser.add_argument(
         "--n-bins",
         default=13,
@@ -139,12 +130,8 @@ def parse_args():
         metavar="GAMMA",
         help="learning rate exponential decay constant",
     )
-    parser.add_argument(
-        "--momentum", default=0.8, type=float, metavar="M", help="momentum"
-    )
-    parser.add_argument(
-        "--weight-decay", default=1e-5, type=float, metavar="W", help="weight decay"
-    )
+    parser.add_argument("--momentum", default=0.8, type=float, metavar="M", help="momentum")
+    parser.add_argument("--weight-decay", default=1e-5, type=float, metavar="W", help="weight decay")
     parser.add_argument("--eps", metavar="EPS", type=float, default=1e-8)
     parser.add_argument("--rho", metavar="RHO", type=float, default=0.95)
     parser.add_argument("--clip-grad", metavar="NORM", type=float, default=0.0)
@@ -172,13 +159,9 @@ def parse_args():
         type=str,
         help="select which part of librispeech to validate with",
     )
-    parser.add_argument(
-        "--distributed", action="store_true", help="enable DistributedDataParallel"
-    )
+    parser.add_argument("--distributed", action="store_true", help="enable DistributedDataParallel")
     parser.add_argument("--seed", type=int, default=0, help="random seed")
-    parser.add_argument(
-        "--world-size", type=int, default=8, help="the world size to initiate DPP"
-    )
+    parser.add_argument("--world-size", type=int, default=8, help="the world size to initiate DPP")
     parser.add_argument("--jit", action="store_true", help="if used, model is jitted")
 
     args = parser.parse_args()
@@ -217,26 +200,30 @@ def compute_error_rates(outputs, targets, decoder, language_model, metric):
         target_print = target[i].ljust(print_length)[:print_length]
         logging.info("Target: %s    Output: %s", target_print, output_print)
 
-    cers = [levenshtein_distance(t, o) for t, o in zip(target, output)]
+    cers = [edit_distance(t, o) for t, o in zip(target, output)]
     cers = sum(cers)
     n = sum(len(t) for t in target)
-    metric["cer over target length"] = cers / n
-    metric["cumulative cer"] += cers
-    metric["total chars"] += n
-    metric["cumulative cer over target length"] = metric["cer"] / metric["total chars"]
+    metric["batch char error"] = cers
+    metric["batch char total"] = n
+    metric["batch char error rate"] = cers / n
+    metric["epoch char error"] += cers
+    metric["epoch char total"] += n
+    metric["epoch char error rate"] = metric["epoch char error"] / metric["epoch char total"]
 
     # Compute WER
 
     output = [o.split(language_model.char_space) for o in output]
     target = [t.split(language_model.char_space) for t in target]
 
-    wers = [levenshtein_distance(t, o) for t, o in zip(target, output)]
+    wers = [edit_distance(t, o) for t, o in zip(target, output)]
     wers = sum(wers)
     n = sum(len(t) for t in target)
-    metric["wer over target length"] = wers / n
-    metric["cumulative wer"] += wers
-    metric["total words"] += n
-    metric["cumulative wer over target length"] = metric["wer"] / metric["total words"]
+    metric["batch word error"] = wers
+    metric["batch word total"] = n
+    metric["batch word error rate"] = wers / n
+    metric["epoch word error"] += wers
+    metric["epoch word total"] += n
+    metric["epoch word error rate"] = metric["epoch word error"] / metric["epoch word total"]
 
 
 def train_one_epoch(
@@ -259,9 +246,7 @@ def train_one_epoch(
     metric = MetricLogger("train", disable=disable_logger)
     metric["epoch"] = epoch
 
-    for inputs, targets, tensors_lengths, target_lengths in bg_iterator(
-        data_loader, maxsize=2
-    ):
+    for inputs, targets, tensors_lengths, target_lengths in bg_iterator(data_loader, maxsize=2):
 
         start = time()
         inputs = inputs.to(device, non_blocking=True)
@@ -282,9 +267,7 @@ def train_one_epoch(
         loss.backward()
 
         if clip_grad > 0:
-            metric["gradient"] = torch.nn.utils.clip_grad_norm_(
-                model.parameters(), clip_grad
-            )
+            metric["gradient"] = torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
 
         optimizer.step()
 
@@ -331,9 +314,7 @@ def evaluate(
         metric = MetricLogger("validation", disable=disable_logger)
         metric["epoch"] = epoch
 
-        for inputs, targets, tensors_lengths, target_lengths in bg_iterator(
-            data_loader, maxsize=2
-        ):
+        for inputs, targets, tensors_lengths, target_lengths in bg_iterator(data_loader, maxsize=2):
 
             inputs = inputs.to(device, non_blocking=True)
             targets = targets.to(device, non_blocking=True)
@@ -347,9 +328,7 @@ def evaluate(
             # input_lengths: batch size
             # target_lengths: batch size
 
-            metric["cumulative loss"] += criterion(
-                outputs, targets, tensors_lengths, target_lengths
-            ).item()
+            metric["cumulative loss"] += criterion(outputs, targets, tensors_lengths, target_lengths).item()
 
             metric["dataset length"] += len(inputs)
             metric["iteration"] += 1
@@ -514,9 +493,7 @@ def main(rank, args):
     else:
         raise ValueError("Selected scheduler not supported")
 
-    criterion = torch.nn.CTCLoss(
-        blank=language_model.mapping[char_blank], zero_infinity=False
-    )
+    criterion = torch.nn.CTCLoss(blank=language_model.mapping[char_blank], zero_infinity=False)
 
     # Data Loader
 
@@ -565,9 +542,7 @@ def main(rank, args):
         optimizer.load_state_dict(checkpoint["optimizer"])
         scheduler.load_state_dict(checkpoint["scheduler"])
 
-        logging.info(
-            "Checkpoint: loaded '%s' at epoch %s", args.checkpoint, checkpoint["epoch"]
-        )
+        logging.info("Checkpoint: loaded '%s' at epoch %s", args.checkpoint, checkpoint["epoch"])
     else:
         logging.info("Checkpoint: not found")
 
@@ -645,9 +620,7 @@ def main(rank, args):
 
 def spawn_main(main, args):
     if args.distributed:
-        torch.multiprocessing.spawn(
-            main, args=(args,), nprocs=args.world_size, join=True
-        )
+        torch.multiprocessing.spawn(main, args=(args,), nprocs=args.world_size, join=True)
     else:
         main(0, args)
 

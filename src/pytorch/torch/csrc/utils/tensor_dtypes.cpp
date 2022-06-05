@@ -51,6 +51,8 @@ std::pair<std::string, std::string> getDtypeNames(
       return std::make_pair("bfloat16", "");
     case at::ScalarType::QUInt4x2:
       return std::make_pair("quint4x2", "");
+    case at::ScalarType::QUInt2x4:
+      return std::make_pair("quint2x4", "");
     default:
       throw std::runtime_error("Unimplemented scalar type");
   }
@@ -63,6 +65,7 @@ void initializeDtypes() {
 
 #define DEFINE_SCALAR_TYPE(_1, n) at::ScalarType::n,
 
+  // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays)
   at::ScalarType all_scalar_types[] = {
       AT_FORALL_SCALAR_TYPES_WITH_COMPLEX_AND_QINTS(DEFINE_SCALAR_TYPE)};
 
@@ -70,6 +73,8 @@ void initializeDtypes() {
     std::string primary_name, legacy_name;
     std::tie(primary_name, legacy_name) = getDtypeNames(scalarType);
     PyObject *dtype = THPDtype_New(scalarType, primary_name);
+    // disable complex32 dtype
+    if (primary_name == "complex32") continue;
     torch::registerDtypeObject((THPDtype*)dtype, scalarType);
     Py_INCREF(dtype);
     if (PyModule_AddObject(torch_module.get(), primary_name.c_str(), dtype) !=

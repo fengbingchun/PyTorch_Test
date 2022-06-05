@@ -1,14 +1,13 @@
 import warnings
-from collections import OrderedDict
-from torch._six import container_abcs
-from itertools import islice
+from collections import OrderedDict, abc as container_abcs
+from itertools import chain, islice
 import operator
 
 import torch
 from .module import Module
 from torch._jit_internal import _copy_to_script_wrapper
 
-from typing import Any, Iterable, Iterator, Mapping, Optional, TYPE_CHECKING, overload, Tuple, TypeVar, Union
+from typing import Any, Dict, Iterable, Iterator, Mapping, Optional, TYPE_CHECKING, overload, Tuple, TypeVar, Union
 
 if TYPE_CHECKING:
     from torch.nn import Parameter
@@ -29,12 +28,32 @@ class Container(Module):
 
 class Sequential(Module):
     r"""A sequential container.
-    Modules will be added to it in the order they are passed in the constructor.
-    Alternatively, an ordered dict of modules can also be passed in.
+    Modules will be added to it in the order they are passed in the
+    constructor. Alternatively, an ``OrderedDict`` of modules can be
+    passed in. The ``forward()`` method of ``Sequential`` accepts any
+    input and forwards it to the first module it contains. It then
+    "chains" outputs to inputs sequentially for each subsequent module,
+    finally returning the output of the last module.
 
-    To make it easier to understand, here is a small example::
+    The value a ``Sequential`` provides over manually calling a sequence
+    of modules is that it allows treating the whole container as a
+    single module, such that performing a transformation on the
+    ``Sequential`` applies to each of the modules it stores (which are
+    each a registered submodule of the ``Sequential``).
 
-        # Example of using Sequential
+    What's the difference between a ``Sequential`` and a
+    :class:`torch.nn.ModuleList`? A ``ModuleList`` is exactly what it
+    sounds like--a list for storing ``Module`` s! On the other hand,
+    the layers in a ``Sequential`` are connected in a cascading way.
+
+    Example::
+
+        # Using Sequential to create a small model. When `model` is run,
+        # input will first be passed to `Conv2d(1,20,5)`. The output of
+        # `Conv2d(1,20,5)` will be used as the input to the first
+        # `ReLU`; the output of the first `ReLU` will become the input
+        # for `Conv2d(20,64,5)`. Finally, the output of
+        # `Conv2d(20,64,5)` will be used as input to the second `ReLU`
         model = nn.Sequential(
                   nn.Conv2d(1,20,5),
                   nn.ReLU(),
@@ -42,7 +61,8 @@ class Sequential(Module):
                   nn.ReLU()
                 )
 
-        # Example of using Sequential with OrderedDict
+        # Using Sequential with OrderedDict. This is functionally the
+        # same as the above code
         model = nn.Sequential(OrderedDict([
                   ('conv1', nn.Conv2d(1,20,5)),
                   ('relu1', nn.ReLU()),
@@ -50,6 +70,8 @@ class Sequential(Module):
                   ('relu2', nn.ReLU())
                 ]))
     """
+
+    _modules: Dict[str, Module]  # type: ignore[assignment]
 
     @overload
     def __init__(self, *args: Module) -> None:
@@ -119,6 +141,15 @@ class Sequential(Module):
             input = module(input)
         return input
 
+    def append(self, module: Module) -> 'Sequential':
+        r"""Appends a given module to the end.
+
+        Args:
+            module (nn.Module): module to append
+        """
+        self.add_module(str(len(self)), module)
+        return self
+
 
 class ModuleList(Module):
     r"""Holds submodules in a list.
@@ -144,6 +175,8 @@ class ModuleList(Module):
                 return x
     """
 
+    _modules: Dict[str, Module]  # type: ignore[assignment]
+
     def __init__(self, modules: Optional[Iterable[Module]] = None) -> None:
         super(ModuleList, self).__init__()
         if modules is not None:
@@ -159,7 +192,7 @@ class ModuleList(Module):
         return str(idx)
 
     @_copy_to_script_wrapper
-    def __getitem__(self, idx: int) -> Module:
+    def __getitem__(self, idx: int) -> Union[Module, 'ModuleList']:
         if isinstance(idx, slice):
             return self.__class__(list(self._modules.values())[idx])
         else:
@@ -189,6 +222,12 @@ class ModuleList(Module):
 
     def __iadd__(self, modules: Iterable[Module]) -> 'ModuleList':
         return self.extend(modules)
+
+    def __add__(self, other: Iterable[Module]) -> 'ModuleList':
+        combined = ModuleList()
+        for i, module in enumerate(chain(self, other)):
+            combined.add_module(str(i), module)
+        return combined
 
     @_copy_to_script_wrapper
     def __dir__(self):
@@ -230,8 +269,7 @@ class ModuleList(Module):
             self.add_module(str(offset + i), module)
         return self
 
-    def forward(self):
-        raise NotImplementedError()
+    # remove forward alltogether to fallback on Module's _forward_unimplemented
 
 
 class ModuleDict(Module):
@@ -245,9 +283,9 @@ class ModuleDict(Module):
 
     * the order of insertion, and
 
-    * in :meth:`~torch.nn.ModuleDict.update`, the order of the merged 
+    * in :meth:`~torch.nn.ModuleDict.update`, the order of the merged
       ``OrderedDict``, ``dict`` (started from Python 3.6) or another
-      :class:`~torch.nn.ModuleDict` (the argument to 
+      :class:`~torch.nn.ModuleDict` (the argument to
       :meth:`~torch.nn.ModuleDict.update`).
 
     Note that :meth:`~torch.nn.ModuleDict.update` with other unordered mapping
@@ -277,6 +315,8 @@ class ModuleDict(Module):
                 x = self.activations[act](x)
                 return x
     """
+
+    _modules: Dict[str, Module]  # type: ignore[assignment]
 
     def __init__(self, modules: Optional[Mapping[str, Module]] = None) -> None:
         super(ModuleDict, self).__init__()
@@ -373,8 +413,7 @@ class ModuleDict(Module):
                 # that's too cumbersome to type correctly with overloads, so we add an ignore here
                 self[m[0]] = m[1]  # type: ignore[assignment]
 
-    def forward(self):
-        raise NotImplementedError()
+    # remove forward alltogether to fallback on Module's _forward_unimplemented
 
 
 class ParameterList(Module):
@@ -400,6 +439,8 @@ class ParameterList(Module):
                     x = self.params[i // 2].mm(x) + p.mm(x)
                 return x
     """
+
+    _parameters: Dict[str, 'Parameter']  # type: ignore[assignment]
 
     def __init__(self, parameters: Optional[Iterable['Parameter']] = None) -> None:
         super(ParameterList, self).__init__()
@@ -543,6 +584,8 @@ class ParameterDict(Module):
                 return x
     """
 
+    _parameters: Dict[str, 'Parameter']  # type: ignore[assignment]
+
     def __init__(self, parameters: Optional[Mapping[str, 'Parameter']] = None) -> None:
         super(ParameterDict, self).__init__()
         self._initialized = True
@@ -575,8 +618,30 @@ class ParameterDict(Module):
     def __iter__(self) -> Iterator[str]:
         return iter(self._parameters.keys())
 
+    def __reversed__(self) -> Iterator[str]:
+        return reversed(list(self._parameters.keys()))
+
+    def copy(self) -> 'ParameterDict':
+        """Returns a copy of this :class:`~torch.nn.ParameterDict` instance.
+        """
+        return ParameterDict(self._parameters.copy())
+
     def __contains__(self, key: str) -> bool:
         return key in self._parameters
+
+    def setdefault(self, key: str, default: Optional['Parameter'] = None) -> 'Parameter':
+        """If key is in the ParameterDict, return its parameter.
+        If not, insert `key` with a parameter `default` and return `default`.
+        `default` defaults to `None`.
+
+        Args:
+            key (string): key to set default for
+            default (:class:`~torch.nn.Parameter`): the parameter set to the key
+        """
+        if key in self._parameters:
+            return self._parameters[key]
+        self[key] = default  # type: ignore[assignment]
+        return self._parameters[key]
 
     def clear(self) -> None:
         """Remove all items from the ParameterDict.
@@ -592,6 +657,31 @@ class ParameterDict(Module):
         v = self[key]
         del self[key]
         return v
+
+    def popitem(self) -> Tuple[str, 'Parameter']:
+        """Remove and return the last inserted `(key, parameter)` pair
+        from the ParameterDict
+        """
+        return self._parameters.popitem()
+
+    def get(self, key: str, default: Optional['Parameter'] = None) -> 'Parameter | None':
+        r"""Return the parameter associated with key if present.
+        Otherwise return default if provided, None if not.
+
+        Args:
+            key (string): key to get from the ParameterDict
+            default (Parameter, optional): value to return if key not present
+        """
+        return self._parameters.get(key, default)
+
+    def fromkeys(self, keys: Iterable['str'], default: Optional['Parameter'] = None) -> 'ParameterDict':
+        r"""Return a new ParameterDict with the keys provided
+
+        Args:
+            keys (iterable, string): keys to make the new ParameterDict from
+            default (Parameter, optional): value to set for all keys
+        """
+        return ParameterDict(self._parameters.fromkeys(keys, default))  # type: ignore[arg-type]
 
     def keys(self) -> Iterable[str]:
         r"""Return an iterable of the ParameterDict keys.
@@ -665,3 +755,17 @@ class ParameterDict(Module):
                       "on each GPU except the original one.")
 
         return super(ParameterDict, self)._replicate_for_data_parallel()
+
+    def __or__(self, other: 'ParameterDict') -> 'ParameterDict':
+        copy = self.copy()
+        copy.update(other._parameters)
+        return copy
+
+    def __ror__(self, other: 'ParameterDict') -> 'ParameterDict':
+        copy = other.copy()
+        copy.update(self._parameters)
+        return copy
+
+    def __ior__(self, other : 'ParameterDict') -> 'ParameterDict':
+        self.update(other._parameters)
+        return self

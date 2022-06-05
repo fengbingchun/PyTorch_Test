@@ -1,18 +1,18 @@
-1. torchaudio:
-    version: v0.8.1
-    commit: e4e171a
-    date: 2021.03.26
-    url: https://github.com/pytorch/audio/releases
-2. torchvision:
-    version: v0.9.1
-    commit: 8fb5838
-    date: 2021.03.26
-    url: https://github.com/pytorch/vision/releases
+1. TorchAudio:
+    version: v0.11.0
+    commit: 820b383
+    date: 2022.03.11
+    url: https://github.com/pytorch/audio/releases/tag/v0.11.0
+2. TorchVision:
+    version: v0.12.0
+    commit: 9b5a3fe
+    date: 2022.03.11
+    url: https://github.com/pytorch/vision/releases/tag/v0.12.0
 3. PyTorch:
-    version: v1.8.1
-    commit: 56b43f4
-    date: 2021.03.26
-    url: https://github.com/pytorch/pytorch/releases
+    version: v1.11.0
+    commit: bc2c6ed
+    date: 2022.03.11
+    url: https://github.com/pytorch/pytorch/releases/tag/v1.11.0
 4. mmcv:
     version: 0.2.4
     commit: 0ad619c

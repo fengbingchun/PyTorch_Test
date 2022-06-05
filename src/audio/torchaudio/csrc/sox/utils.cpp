@@ -22,6 +22,10 @@ void set_buffer_size(const int64_t buffer_size) {
   sox_get_globals()->bufsiz = static_cast<size_t>(buffer_size);
 }
 
+int64_t get_buffer_size() {
+  return sox_get_globals()->bufsiz;
+}
+
 std::vector<std::vector<std::string>> list_effects() {
   std::vector<std::vector<std::string>> effects;
   for (const sox_effect_fn_t* fns = sox_get_effect_fns(); *fns; ++fns) {
@@ -81,13 +85,18 @@ void SoxFormat::close() {
   }
 }
 
-void validate_input_file(const SoxFormat& sf) {
+void validate_input_file(const SoxFormat& sf, const std::string& path) {
   if (static_cast<sox_format_t*>(sf) == nullptr) {
-    throw std::runtime_error("Error loading audio file: failed to open file.");
+    throw std::runtime_error(
+        "Error loading audio file: failed to open file " + path);
   }
   if (sf->encoding.encoding == SOX_ENCODING_UNKNOWN) {
     throw std::runtime_error("Error loading audio file: unknown encoding.");
   }
+}
+
+void validate_input_memfile(const SoxFormat& sf) {
+  return validate_input_file(sf, "<in memory buffer>");
 }
 
 void validate_input_tensor(const torch::Tensor tensor) {
@@ -141,24 +150,6 @@ caffe2::TypeMeta get_dtype(
   return c10::scalarTypeToTypeMeta(dtype);
 }
 
-caffe2::TypeMeta get_dtype_from_str(const std::string dtype) {
-  const auto tgt_dtype = [&]() {
-    if (dtype == "uint8")
-      return torch::kUInt8;
-    else if (dtype == "int16")
-      return torch::kInt16;
-    else if (dtype == "int32")
-      return torch::kInt32;
-    else if (dtype == "float32")
-      return torch::kFloat32;
-    else if (dtype == "float64")
-      return torch::kFloat64;
-    else
-      throw std::runtime_error("Unsupported dtype");
-  }();
-  return c10::scalarTypeToTypeMeta(tgt_dtype);
-}
-
 torch::Tensor convert_to_tensor(
     sox_sample_t* buffer,
     const int32_t num_samples,
@@ -167,7 +158,7 @@ torch::Tensor convert_to_tensor(
     const bool normalize,
     const bool channels_first) {
   torch::Tensor t;
-  uint64_t dummy;
+  uint64_t dummy = 0;
   SOX_SAMPLE_LOCALS;
   if (normalize || dtype == torch::kFloat32) {
     t = torch::empty(
@@ -295,8 +286,8 @@ std::tuple<sox_encoding_t, unsigned> get_save_encoding_for_wav(
 std::tuple<sox_encoding_t, unsigned> get_save_encoding(
     const std::string& format,
     const caffe2::TypeMeta dtype,
-    const c10::optional<std::string>& encoding,
-    const c10::optional<int64_t>& bits_per_sample) {
+    const c10::optional<std::string> encoding,
+    const c10::optional<int64_t> bits_per_sample) {
   const Format fmt = get_format_from_string(format);
   const Encoding enc = get_encoding_from_option(encoding);
   const BitDepth bps = get_bit_depth_from_option(bits_per_sample);
@@ -488,9 +479,9 @@ sox_encodinginfo_t get_tensor_encodinginfo(caffe2::TypeMeta dtype) {
 sox_encodinginfo_t get_encodinginfo_for_save(
     const std::string& format,
     const caffe2::TypeMeta dtype,
-    const c10::optional<double>& compression,
-    const c10::optional<std::string>& encoding,
-    const c10::optional<int64_t>& bits_per_sample) {
+    const c10::optional<double> compression,
+    const c10::optional<std::string> encoding,
+    const c10::optional<int64_t> bits_per_sample) {
   auto enc = get_save_encoding(format, dtype, encoding, bits_per_sample);
   return sox_encodinginfo_t{
       /*encoding=*/std::get<0>(enc),
@@ -501,35 +492,6 @@ sox_encodinginfo_t get_encodinginfo_for_save(
       /*reverse_bits=*/sox_option_default,
       /*opposite_endian=*/sox_false};
 }
-
-#ifdef TORCH_API_INCLUDE_EXTENSION_H
-
-uint64_t read_fileobj(py::object* fileobj, const uint64_t size, char* buffer) {
-  uint64_t num_read = 0;
-  while (num_read < size) {
-    auto request = size - num_read;
-    auto chunk = static_cast<std::string>(
-        static_cast<py::bytes>(fileobj->attr("read")(request)));
-    auto chunk_len = chunk.length();
-    if (chunk_len == 0) {
-      break;
-    }
-    if (chunk_len > request) {
-      std::ostringstream message;
-      message
-          << "Requested up to " << request << " bytes but, "
-          << "received " << chunk_len << " bytes. "
-          << "The given object does not confirm to read protocol of file object.";
-      throw std::runtime_error(message.str());
-    }
-    memcpy(buffer, chunk.data(), chunk_len);
-    buffer += chunk_len;
-    num_read += chunk_len;
-  }
-  return num_read;
-}
-
-#endif // TORCH_API_INCLUDE_EXTENSION_H
 
 TORCH_LIBRARY_FRAGMENT(torchaudio, m) {
   m.def("torchaudio::sox_utils_set_seed", &torchaudio::sox_utils::set_seed);
@@ -551,6 +513,9 @@ TORCH_LIBRARY_FRAGMENT(torchaudio, m) {
   m.def(
       "torchaudio::sox_utils_list_write_formats",
       &torchaudio::sox_utils::list_write_formats);
+  m.def(
+      "torchaudio::sox_utils_get_buffer_size",
+      &torchaudio::sox_utils::get_buffer_size);
 }
 
 } // namespace sox_utils
