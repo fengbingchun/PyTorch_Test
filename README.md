@@ -9,6 +9,7 @@
 	- batch normalization
 	- Faster R-CNN + ResNet-50 target detection
 	- AlexNet image classification
+	- digital identification: LeNet-5(train and predict)
 
 **The version of each open source library see:** [version.txt](https://github.com/fengbingchun/PyTorch_Test/blob/master/src/version.txt)
 

@@ -7,3 +7,5 @@
 /demo/pytorch/tutorial/*.pth
 /data/image/
 /data/MNIST/
+/data/*.pth
+/demo/pytorch/lenet-5/mnist_data/
