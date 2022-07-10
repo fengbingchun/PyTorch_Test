@@ -8,4 +8,8 @@
 /data/image/
 /data/MNIST/
 /data/*.pth
+/data/*.tar
 /demo/pytorch/lenet-5/mnist_data/
+/demo/pytorch/activation_function/__pycache__/
+/demo/pytorch/lenet5/__pycache__/
+/demo/pytorch/lenet5/mnist_data/
