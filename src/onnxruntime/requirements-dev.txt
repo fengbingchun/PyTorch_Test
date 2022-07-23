@@ -1,0 +1,17 @@
+cerberus
+codecov
+flatbuffers
+jinja2
+numpy
+onnx
+onnxmltools
+packaging
+pandas
+protobuf
+pytest
+pytest-cov
+scikit-learn
+scipy
+sympy
+wheel
+setuptools>=41.4.0
