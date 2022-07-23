@@ -15,3 +15,6 @@
 /demo/pytorch/activation_function/__pycache__/
 /demo/pytorch/lenet5/__pycache__/
 /demo/pytorch/lenet5/mnist_data/
+/demo/onnx/resnet50v2/
+/demo/onnx/*.json
+/demo/onnx/*.tar.gz
