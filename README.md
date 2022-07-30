@@ -19,7 +19,7 @@
 	- digital identification: LeNet-5(train and predict)
 - ONNX/ONNX Runtime code
 	- ResNet-50 image classification
-
+	- LeNet-5 digital identification
 
 **The version of each open source library see:** [version.txt](https://github.com/fengbingchun/PyTorch_Test/blob/master/src/version.txt)
 
