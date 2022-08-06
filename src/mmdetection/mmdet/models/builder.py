@@ -1,51 +1,59 @@
-import mmcv
-from torch import nn
+# Copyright (c) OpenMMLab. All rights reserved.
+import warnings
 
-from .registry import BACKBONES, NECKS, ROI_EXTRACTORS, HEADS, DETECTORS
+from mmcv.cnn import MODELS as MMCV_MODELS
+from mmcv.utils import Registry
 
+MODELS = Registry('models', parent=MMCV_MODELS)
 
-def _build_module(cfg, registry, default_args):
-    assert isinstance(cfg, dict) and 'type' in cfg
-    assert isinstance(default_args, dict) or default_args is None
-    args = cfg.copy()
-    obj_type = args.pop('type')
-    if mmcv.is_str(obj_type):
-        if obj_type not in registry.module_dict:
-            raise KeyError('{} is not in the {} registry'.format(
-                obj_type, registry.name))
-        obj_type = registry.module_dict[obj_type]
-    elif not isinstance(obj_type, type):
-        raise TypeError('type must be a str or valid type, but got {}'.format(
-            type(obj_type)))
-    if default_args is not None:
-        for name, value in default_args.items():
-            args.setdefault(name, value)
-    return obj_type(**args)
-
-
-def build(cfg, registry, default_args=None):
-    if isinstance(cfg, list):
-        modules = [_build_module(cfg_, registry, default_args) for cfg_ in cfg]
-        return nn.Sequential(*modules)
-    else:
-        return _build_module(cfg, registry, default_args)
+BACKBONES = MODELS
+NECKS = MODELS
+ROI_EXTRACTORS = MODELS
+SHARED_HEADS = MODELS
+HEADS = MODELS
+LOSSES = MODELS
+DETECTORS = MODELS
 
 
 def build_backbone(cfg):
-    return build(cfg, BACKBONES)
+    """Build backbone."""
+    return BACKBONES.build(cfg)
 
 
 def build_neck(cfg):
-    return build(cfg, NECKS)
+    """Build neck."""
+    return NECKS.build(cfg)
 
 
 def build_roi_extractor(cfg):
-    return build(cfg, ROI_EXTRACTORS)
+    """Build roi extractor."""
+    return ROI_EXTRACTORS.build(cfg)
+
+
+def build_shared_head(cfg):
+    """Build shared head."""
+    return SHARED_HEADS.build(cfg)
 
 
 def build_head(cfg):
-    return build(cfg, HEADS)
+    """Build head."""
+    return HEADS.build(cfg)
+
+
+def build_loss(cfg):
+    """Build loss."""
+    return LOSSES.build(cfg)
 
 
 def build_detector(cfg, train_cfg=None, test_cfg=None):
-    return build(cfg, DETECTORS, dict(train_cfg=train_cfg, test_cfg=test_cfg))
+    """Build detector."""
+    if train_cfg is not None or test_cfg is not None:
+        warnings.warn(
+            'train_cfg and test_cfg is deprecated, '
+            'please specify them in model', UserWarning)
+    assert cfg.get('train_cfg') is None or train_cfg is None, \
+        'train_cfg specified in both outer field and model field '
+    assert cfg.get('test_cfg') is None or test_cfg is None, \
+        'test_cfg specified in both outer field and model field '
+    return DETECTORS.build(
+        cfg, default_args=dict(train_cfg=train_cfg, test_cfg=test_cfg))

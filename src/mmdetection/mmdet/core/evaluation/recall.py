@@ -1,4 +1,8 @@
+# Copyright (c) OpenMMLab. All rights reserved.
+from collections.abc import Sequence
+
 import numpy as np
+from mmcv.utils import print_log
 from terminaltables import AsciiTable
 
 from .bbox_overlaps import bbox_overlaps
@@ -38,9 +42,8 @@ def _recalls(all_ious, proposal_nums, thrs):
 
 
 def set_recall_param(proposal_nums, iou_thrs):
-    """Check proposal_nums and iou_thrs and set correct format.
-    """
-    if isinstance(proposal_nums, list):
+    """Check proposal_nums and iou_thrs and set correct format."""
+    if isinstance(proposal_nums, Sequence):
         _proposal_nums = np.array(proposal_nums)
     elif isinstance(proposal_nums, int):
         _proposal_nums = np.array([proposal_nums])
@@ -49,7 +52,7 @@ def set_recall_param(proposal_nums, iou_thrs):
 
     if iou_thrs is None:
         _iou_thrs = np.array([0.5])
-    elif isinstance(iou_thrs, list):
+    elif isinstance(iou_thrs, Sequence):
         _iou_thrs = np.array(iou_thrs)
     elif isinstance(iou_thrs, float):
         _iou_thrs = np.array([iou_thrs])
@@ -62,15 +65,23 @@ def set_recall_param(proposal_nums, iou_thrs):
 def eval_recalls(gts,
                  proposals,
                  proposal_nums=None,
-                 iou_thrs=None,
-                 print_summary=True):
+                 iou_thrs=0.5,
+                 logger=None,
+                 use_legacy_coordinate=False):
     """Calculate recalls.
 
     Args:
-        gts(list or ndarray): a list of arrays of shape (n, 4)
-        proposals(list or ndarray): a list of arrays of shape (k, 4) or (k, 5)
-        proposal_nums(int or list of int or ndarray): top N proposals
-        thrs(float or list or ndarray): iou thresholds
+        gts (list[ndarray]): a list of arrays of shape (n, 4)
+        proposals (list[ndarray]): a list of arrays of shape (k, 4) or (k, 5)
+        proposal_nums (int | Sequence[int]): Top N proposals to be evaluated.
+        iou_thrs (float | Sequence[float]): IoU thresholds. Default: 0.5.
+        logger (logging.Logger | str | None): The way to print the recall
+            summary. See `mmcv.utils.print_log()` for details. Default: None.
+        use_legacy_coordinate (bool): Whether use coordinate system
+            in mmdet v1.x. "1" was added to both height and width
+            which means w, h should be
+            computed as 'x2 - x1 + 1` and 'y2 - y1 + 1'. Default: False.
+
 
     Returns:
         ndarray: recalls of different ious and proposal nums
@@ -78,9 +89,7 @@ def eval_recalls(gts,
 
     img_num = len(gts)
     assert img_num == len(proposals)
-
     proposal_nums, iou_thrs = set_recall_param(proposal_nums, iou_thrs)
-
     all_ious = []
     for i in range(img_num):
         if proposals[i].ndim == 2 and proposals[i].shape[1] == 5:
@@ -93,12 +102,15 @@ def eval_recalls(gts,
         if gts[i] is None or gts[i].shape[0] == 0:
             ious = np.zeros((0, img_proposal.shape[0]), dtype=np.float32)
         else:
-            ious = bbox_overlaps(gts[i], img_proposal[:prop_num, :4])
+            ious = bbox_overlaps(
+                gts[i],
+                img_proposal[:prop_num, :4],
+                use_legacy_coordinate=use_legacy_coordinate)
         all_ious.append(ious)
     all_ious = np.array(all_ious)
     recalls = _recalls(all_ious, proposal_nums, iou_thrs)
-    if print_summary:
-        print_recall_summary(recalls, proposal_nums, iou_thrs)
+
+    print_recall_summary(recalls, proposal_nums, iou_thrs, logger=logger)
     return recalls
 
 
@@ -106,15 +118,18 @@ def print_recall_summary(recalls,
                          proposal_nums,
                          iou_thrs,
                          row_idxs=None,
-                         col_idxs=None):
+                         col_idxs=None,
+                         logger=None):
     """Print recalls in a table.
 
     Args:
-        recalls(ndarray): calculated from `bbox_recalls`
-        proposal_nums(ndarray or list): top N proposals
-        iou_thrs(ndarray or list): iou thresholds
-        row_idxs(ndarray): which rows(proposal nums) to print
-        col_idxs(ndarray): which cols(iou thresholds) to print
+        recalls (ndarray): calculated from `bbox_recalls`
+        proposal_nums (ndarray or list): top N proposals
+        iou_thrs (ndarray or list): iou thresholds
+        row_idxs (ndarray): which rows(proposal nums) to print
+        col_idxs (ndarray): which cols(iou thresholds) to print
+        logger (logging.Logger | str | None): The way to print the recall
+            summary. See `mmcv.utils.print_log()` for details. Default: None.
     """
     proposal_nums = np.array(proposal_nums, dtype=np.int32)
     iou_thrs = np.array(iou_thrs)
@@ -125,14 +140,11 @@ def print_recall_summary(recalls,
     row_header = [''] + iou_thrs[col_idxs].tolist()
     table_data = [row_header]
     for i, num in enumerate(proposal_nums[row_idxs]):
-        row = [
-            '{:.3f}'.format(val)
-            for val in recalls[row_idxs[i], col_idxs].tolist()
-        ]
+        row = [f'{val:.3f}' for val in recalls[row_idxs[i], col_idxs].tolist()]
         row.insert(0, num)
         table_data.append(row)
     table = AsciiTable(table_data)
-    print(table.table)
+    print_log('\n' + table.table, logger=logger)
 
 
 def plot_num_recall(recalls, proposal_nums):

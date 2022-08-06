@@ -1,29 +1,27 @@
+# Copyright (c) OpenMMLab. All rights reserved.
+from ..builder import DETECTORS
 from .two_stage import TwoStageDetector
-from ..registry import DETECTORS
 
 
-@DETECTORS.register_module
+@DETECTORS.register_module()
 class MaskRCNN(TwoStageDetector):
+    """Implementation of `Mask R-CNN <https://arxiv.org/abs/1703.06870>`_"""
 
     def __init__(self,
                  backbone,
-                 neck,
                  rpn_head,
-                 bbox_roi_extractor,
-                 bbox_head,
-                 mask_roi_extractor,
-                 mask_head,
+                 roi_head,
                  train_cfg,
                  test_cfg,
-                 pretrained=None):
+                 neck=None,
+                 pretrained=None,
+                 init_cfg=None):
         super(MaskRCNN, self).__init__(
             backbone=backbone,
             neck=neck,
             rpn_head=rpn_head,
-            bbox_roi_extractor=bbox_roi_extractor,
-            bbox_head=bbox_head,
-            mask_roi_extractor=mask_roi_extractor,
-            mask_head=mask_head,
+            roi_head=roi_head,
             train_cfg=train_cfg,
             test_cfg=test_cfg,
-            pretrained=pretrained)
+            pretrained=pretrained,
+            init_cfg=init_cfg)
