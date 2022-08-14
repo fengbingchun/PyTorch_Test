@@ -21,7 +21,12 @@
 	- ResNet-50 image classification
 	- LeNet-5 digital identification
 - OpenMMLab code
-	- Faster R-CNN target detection
+	- MMDetection
+		- Faster R-CNN target detection
+	- MMEditing
+		- inpainting
+		- matting
+
 
 **The version of each open source library see:** [version.txt](https://github.com/fengbingchun/PyTorch_Test/blob/master/src/version.txt)
 

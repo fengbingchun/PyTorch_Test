@@ -33,3 +33,8 @@
     commit: 366f4eb 
     date: 2022.04.28
     url: https://github.com/microsoft/onnxruntime/releases
+8. mmediting:
+    version: v0.15.1
+    commit: 9c226e2
+    date: 2022.07.04
+    url: https://github.com/open-mmlab/mmediting/releases

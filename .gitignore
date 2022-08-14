@@ -18,3 +18,5 @@
 /demo/onnx/resnet50v2/
 /demo/onnx/*.json
 /demo/onnx/*.tar.gz
+/data/result_*
+/demo/openmmlab/__pycache__/
