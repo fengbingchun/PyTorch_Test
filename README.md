@@ -26,6 +26,8 @@
 	- MMEditing
 		- inpainting
 		- matting
+		- image super resolution
+		- image generation
 
 
 **The version of each open source library see:** [version.txt](https://github.com/fengbingchun/PyTorch_Test/blob/master/src/version.txt)

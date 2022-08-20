@@ -38,3 +38,8 @@
     commit: 9c226e2
     date: 2022.07.04
     url: https://github.com/open-mmlab/mmediting/releases
+9. mmsegmentation:
+    version: v0.27.0
+    commit: eeeaff9
+    date: 2022.07.28
+    url: https://github.com/open-mmlab/mmsegmentation/releases
