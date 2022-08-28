@@ -20,4 +20,5 @@
 /demo/onnx/*.tar.gz
 /data/result_*
 /data/src_*
+/data/*.png
 /demo/openmmlab/__pycache__/

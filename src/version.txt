@@ -43,3 +43,13 @@
     commit: eeeaff9
     date: 2022.07.28
     url: https://github.com/open-mmlab/mmsegmentation/releases
+10. mmclassification:
+    version: v0.23.2
+    commit: 71ef7ba
+    date: 2022.07.28
+    url: https://github.com/open-mmlab/mmclassification/releases
+11. mmpose:
+    version: v0.28.1
+    commit: efdfa1c
+    date: 2022.07.28
+    url: https://github.com/open-mmlab/mmpose/releases
