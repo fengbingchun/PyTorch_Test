@@ -53,3 +53,8 @@
     commit: efdfa1c
     date: 2022.07.28
     url: https://github.com/open-mmlab/mmpose/releases
+12. mmocr:
+    version: v0.6.1
+    commit: e5f071a
+    date: 2022.08.04
+    url: https://github.com/open-mmlab/mmocr/releases

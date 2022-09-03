@@ -22,7 +22,6 @@
 	- LeNet-5 digital identification
 - OpenMMLab code
 	- MMDetection
-		- Faster R-CNN target detection
 	- MMEditing
 		- inpainting
 		- matting
@@ -30,6 +29,10 @@
 		- image generation
 	- MMSegmentation
 	- MMClassification
+	- MMPose
+		- 2d face landmark
+		- 2d hand pose estimation
+		- 2d human pose estimation
 
 **The version of each open source library see:** [version.txt](https://github.com/fengbingchun/PyTorch_Test/blob/master/src/version.txt)
 

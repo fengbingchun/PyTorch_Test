@@ -22,3 +22,4 @@
 /data/src_*
 /data/*.png
 /demo/openmmlab/__pycache__/
+/data/*.webp
