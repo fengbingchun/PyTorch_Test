@@ -58,3 +58,8 @@
     commit: e5f071a
     date: 2022.08.04
     url: https://github.com/open-mmlab/mmocr/releases
+13. mmgeneration:
+    version: v0.6.0
+    commit: 6758f02
+    date: 2022.03.07
+    url: https://github.com/open-mmlab/mmgeneration/releases

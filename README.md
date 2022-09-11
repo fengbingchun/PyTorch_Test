@@ -33,6 +33,8 @@
 		- 2d face landmark
 		- 2d hand pose estimation
 		- 2d human pose estimation
+	- MMOCR
+	- MMGeneration
 
 **The version of each open source library see:** [version.txt](https://github.com/fengbingchun/PyTorch_Test/blob/master/src/version.txt)
 
