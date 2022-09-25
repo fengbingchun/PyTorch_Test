@@ -63,3 +63,8 @@
     commit: 6758f02
     date: 2022.03.07
     url: https://github.com/open-mmlab/mmgeneration/releases
+14. mmdeploy:
+    versoin: v0.8.0
+    commit: b310ba8
+    date: 2022.09.07
+    url: https://github.com/open-mmlab/mmdeploy/releases
